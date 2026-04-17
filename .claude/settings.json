@@ -1,0 +1,51 @@
+{
+  "env": {
+    "RUST_LOG": "debug",
+    "RUST_BACKTRACE": "1",
+    "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS": "1"
+  },
+  "permissions": {
+    "allowRules": [
+      "Bash(cargo *)",
+      "Bash(rustup *)",
+      "Bash(git log*)",
+      "Bash(git diff*)",
+      "Bash(git status*)",
+      "Bash(git add*)",
+      "Bash(git commit*)",
+      "Bash(git push*)",
+      "Bash(git fetch*)",
+      "Bash(git checkout*)",
+      "Bash(git branch*)",
+      "Bash(mkdir *)",
+      "Bash(chmod *)"
+    ],
+    "denyRules": [
+      "Bash(rm -rf /home/user/Strata/src/*)",
+      "Bash(sudo rm*)"
+    ]
+  },
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/home/user/Strata/.claude/hooks/post-edit.sh"
+          }
+        ]
+      }
+    ]
+  },
+  "mcp": {
+    "servers": [
+      {
+        "name": "sqlite",
+        "type": "local",
+        "command": "uvx",
+        "args": ["mcp-server-sqlite", "--db-path", "/home/user/Strata/data/strata.db"]
+      }
+    ]
+  }
+}

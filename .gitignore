@@ -1,0 +1,23 @@
+# Rust build artifacts
+/target/
+Cargo.lock
+
+# Local Claude Code overrides (use .claude/settings.local.json.template to start)
+.claude/settings.local.json
+
+# SQLite database (local data, never committed)
+data/
+*.db
+*.db-shm
+*.db-wal
+
+# Tauri build output
+src-tauri/target/
+
+# Environment secrets
+.env
+.env.local
+
+# OS artifacts
+.DS_Store
+Thumbs.db
