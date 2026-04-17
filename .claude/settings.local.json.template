@@ -1,0 +1,18 @@
+{
+  "_comment": "Copy this file to .claude/settings.local.json (gitignored) for personal overrides.",
+  "env": {
+    "RUST_LOG": "debug",
+    "RUST_BACKTRACE": "full"
+  },
+  "mcp": {
+    "servers": [
+      {
+        "_comment": "Override SQLite path if your local db lives elsewhere",
+        "name": "sqlite",
+        "type": "local",
+        "command": "uvx",
+        "args": ["mcp-server-sqlite", "--db-path", "/home/user/Strata/data/strata.db"]
+      }
+    ]
+  }
+}
