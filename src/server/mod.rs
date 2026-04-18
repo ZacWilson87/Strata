@@ -40,13 +40,15 @@ impl McpServer {
 
             let response = match serde_json::from_str::<JsonRpcRequest>(&line) {
                 Ok(req) => router::dispatch(req, &self.graph, &self.consent).await,
-                Err(e) => JsonRpcResponse::parse_error(e.to_string()),
+                Err(e) => Some(JsonRpcResponse::parse_error(e.to_string())),
             };
 
-            let mut json = serde_json::to_string(&response)?;
-            json.push('\n');
-            stdout.write_all(json.as_bytes()).await?;
-            stdout.flush().await?;
+            if let Some(response) = response {
+                let mut json = serde_json::to_string(&response)?;
+                json.push('\n');
+                stdout.write_all(json.as_bytes()).await?;
+                stdout.flush().await?;
+            }
         }
 
         Ok(())
@@ -81,7 +83,8 @@ mod tests {
             &server.graph,
             &server.consent,
         )
-        .await;
+        .await
+        .unwrap();
         assert!(r.error.is_some());
         assert_eq!(r.error.unwrap().code, -32601);
     }
@@ -94,7 +97,8 @@ mod tests {
             &server.graph,
             &server.consent,
         )
-        .await;
+        .await
+        .unwrap();
         assert!(r.error.is_none());
         assert!(r.result.is_some());
     }
@@ -107,7 +111,8 @@ mod tests {
             &server.graph,
             &server.consent,
         )
-        .await;
+        .await
+        .unwrap();
         assert!(r.error.is_none());
     }
 
@@ -119,7 +124,8 @@ mod tests {
             &server.graph,
             &server.consent,
         )
-        .await;
+        .await
+        .unwrap();
         assert!(r.error.is_none());
     }
 
@@ -134,7 +140,8 @@ mod tests {
             &server.graph,
             &server.consent,
         )
-        .await;
+        .await
+        .unwrap();
         assert!(r.error.is_none());
     }
 }

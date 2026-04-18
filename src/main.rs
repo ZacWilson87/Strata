@@ -14,6 +14,7 @@ async fn main() -> anyhow::Result<()> {
         .init();
 
     let data_dir = dirs_data_dir().unwrap_or_else(|| ".".into());
+    std::fs::create_dir_all(&data_dir).context("failed to create data directory")?;
     let db_path = format!("{data_dir}/strata.db");
 
     tracing::info!("opening graph database at {}", db_path);

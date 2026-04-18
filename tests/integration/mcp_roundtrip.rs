@@ -212,7 +212,7 @@ async fn unknown_method_returns_method_not_found() {
         method: "strata/does_not_exist".into(),
         params: None,
     };
-    let resp = dispatch(req, &graph, &consent).await;
+    let resp = dispatch(req, &graph, &consent).await.unwrap();
     assert!(resp.error.is_some());
     assert_eq!(resp.error.unwrap().code, -32601);
 }
