@@ -1,6 +1,5 @@
 # Rust build artifacts
 /target/
-Cargo.lock
 
 # Local Claude Code overrides (use .claude/settings.local.json.template to start)
 .claude/settings.local.json
