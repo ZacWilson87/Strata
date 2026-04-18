@@ -1,6 +1,5 @@
 # Rust build artifacts
 /target/
-Cargo.lock
 
 # Local Claude Code overrides (use .claude/settings.local.json.template to start)
 .claude/settings.local.json
@@ -13,6 +12,11 @@ data/
 
 # Tauri build output
 src-tauri/target/
+
+# Frontend
+node_modules/
+ui/dist/
+ui/.vite/
 
 # Environment secrets
 .env
