@@ -75,6 +75,53 @@ Raw prompts and private content never leave the device.
 
 ---
 
+## Getting Started
+
+### Requirements
+
+- Rust stable (1.84+) — install via [rustup](https://rustup.rs)
+- Node.js 18+ — for the dashboard UI
+
+### Run the MCP server
+
+```bash
+cargo build --release
+./target/release/strata
+```
+
+The server listens on **stdio** using JSON-RPC 2.0 — the standard MCP transport.
+
+### Connect to Claude Desktop
+
+Add to your `claude_desktop_config.json`:
+
+```json
+{
+  "mcpServers": {
+    "strata": {
+      "command": "/path/to/strata"
+    }
+  }
+}
+```
+
+Claude will then have access to `strata/skills`, `strata/context`, and `strata/preferences`.
+
+### Run the desktop dashboard
+
+```bash
+cargo tauri dev
+```
+
+### Run tests
+
+```bash
+cargo test          # Rust unit + integration tests
+cd ui && npm test   # React component tests
+```
+
+---
+
 ## Vision
 
 Every person using AI tools will need a private, persistent intelligence layer that software can personalize around.
