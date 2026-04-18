@@ -1,0 +1,77 @@
+/// SQLite schema migrations for the skill graph.
+use rusqlite::Connection;
+
+use super::queries::GraphError;
+
+/// Apply all schema migrations in order. Safe to run on an existing database.
+pub fn migrate(conn: &Connection) -> Result<(), GraphError> {
+    conn.execute_batch(
+        "
+        PRAGMA journal_mode=WAL;
+        PRAGMA foreign_keys=ON;
+
+        CREATE TABLE IF NOT EXISTS skills (
+            id           TEXT PRIMARY KEY,
+            tag          TEXT NOT NULL UNIQUE,
+            strength     REAL NOT NULL DEFAULT 0.0,
+            last_seen    TEXT NOT NULL,
+            session_count INTEGER NOT NULL DEFAULT 0
+        );
+
+        CREATE TABLE IF NOT EXISTS skill_edges (
+            from_id      TEXT NOT NULL REFERENCES skills(id) ON DELETE CASCADE,
+            to_id        TEXT NOT NULL REFERENCES skills(id) ON DELETE CASCADE,
+            co_occurrence INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY (from_id, to_id)
+        );
+
+        CREATE TABLE IF NOT EXISTS preferences (
+            key          TEXT PRIMARY KEY,
+            value        TEXT NOT NULL,
+            updated_at   TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS audit_log (
+            id           INTEGER PRIMARY KEY AUTOINCREMENT,
+            event        TEXT NOT NULL,
+            detail       TEXT,
+            occurred_at  TEXT NOT NULL
+        );
+        ",
+    )?;
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn migration_runs_on_fresh_db() {
+        let conn = Connection::open_in_memory().unwrap();
+        migrate(&conn).unwrap();
+    }
+
+    #[test]
+    fn migration_is_idempotent() {
+        let conn = Connection::open_in_memory().unwrap();
+        migrate(&conn).unwrap();
+        migrate(&conn).unwrap(); // second run must not fail
+    }
+
+    #[test]
+    fn expected_tables_exist() {
+        let conn = Connection::open_in_memory().unwrap();
+        migrate(&conn).unwrap();
+        for table in &["skills", "skill_edges", "preferences", "audit_log"] {
+            let count: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?1",
+                    rusqlite::params![table],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(count, 1, "table {} should exist", table);
+        }
+    }
+}
