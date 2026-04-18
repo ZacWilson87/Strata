@@ -91,9 +91,20 @@ Compile-time boundaries prevent raw content from crossing module lines:
 
 ## MCP Transport
 
-JSON-RPC 2.0 over **stdio** (newline-delimited). AI clients spawn the `strata` binary directly — no TCP port, no firewall config needed.
+JSON-RPC 2.0 over **stdio** (newline-delimited). AI clients spawn the `strata` binary directly — no TCP port, no firewall config needed. Protocol version: `2024-11-05`.
 
-| Method | Description |
+### Lifecycle (standard MCP handshake)
+
+| Method | Direction | Description |
+|---|---|---|
+| `initialize` | client → server | Negotiate protocol version; server returns capabilities |
+| `notifications/initialized` | client → server | Client confirms ready; no response sent |
+| `tools/list` | client → server | Discover available tools |
+| `tools/call` | client → server | Invoke a tool by name |
+
+### Tools
+
+| Tool name | Description |
 |---|---|
 | `strata/skills` | Ranked skill list + derived summary |
 | `strata/context` | Current session personalization context |

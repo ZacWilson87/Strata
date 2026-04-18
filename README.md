@@ -89,11 +89,11 @@ cargo build --release
 ./target/release/strata
 ```
 
-The server listens on **stdio** using JSON-RPC 2.0 — the standard MCP transport.
+The server implements the MCP 2024-11-05 protocol over **stdio** (JSON-RPC 2.0, newline-delimited). It handles the standard `initialize` / `tools/list` / `tools/call` handshake, so any compliant MCP client connects automatically.
 
 ### Connect to Claude Desktop
 
-Add to your `claude_desktop_config.json`:
+Add to `~/Library/Application Support/Claude/claude_desktop_config.json`:
 
 ```json
 {
@@ -105,7 +105,13 @@ Add to your `claude_desktop_config.json`:
 }
 ```
 
-Claude will then have access to `strata/skills`, `strata/context`, and `strata/preferences`.
+### Connect to Claude Code CLI
+
+```bash
+claude mcp add strata /path/to/strata --scope user
+```
+
+Claude will then have access to the `strata/skills`, `strata/context`, `strata/preferences`, and `strata/ingest` tools.
 
 ### Run the desktop dashboard
 
