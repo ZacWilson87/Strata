@@ -198,6 +198,151 @@ async fn preferences_endpoint_returns_stored_prefs() {
     assert_eq!(prefs["theme"].as_str().unwrap(), "dark");
 }
 
+// ── AI-as-taxonomizer: pre-classified ingest ─────────────────────────────────
+
+#[tokio::test]
+async fn preclassified_ingest_stores_work_type_tag() {
+    let (graph, consent) = make_handles();
+    let params = serde_json::json!({
+        "tool_used": "claude",
+        "content": "",
+        "work_type": "analysis",
+        "domain_tags": ["food_science", "fermentation"],
+        "topic_summary": "optimizing Maillard reaction in plant-based proteins",
+    });
+    tools::handle_ingest(params, &graph, &consent)
+        .await
+        .unwrap();
+
+    let skills = graph.get_top_skills(50).unwrap();
+    let tags: Vec<&str> = skills.iter().map(|s| s.tag.as_str()).collect();
+    assert!(
+        tags.contains(&"wt:analysis"),
+        "work type tag missing: {tags:?}"
+    );
+    assert!(
+        tags.contains(&"dt:food_science"),
+        "domain tag missing: {tags:?}"
+    );
+    assert!(
+        tags.contains(&"dt:fermentation"),
+        "domain tag missing: {tags:?}"
+    );
+}
+
+#[tokio::test]
+async fn preclassified_ingest_empty_content_is_accepted() {
+    let (graph, consent) = make_handles();
+    let params = serde_json::json!({
+        "tool_used": "cursor",
+        "work_type": "research",
+        "domain_tags": ["quantum_physics", "entanglement"],
+    });
+    let result = tools::handle_ingest(params, &graph, &consent)
+        .await
+        .unwrap();
+    assert!(result["ingested"].as_u64().unwrap() > 0);
+}
+
+#[tokio::test]
+async fn skills_response_separates_work_types_and_domains() {
+    let (graph, consent) = make_handles();
+    let params = serde_json::json!({
+        "tool_used": "claude",
+        "content": "rust async code",
+        "work_type": "creation",
+        "domain_tags": ["systems_programming"],
+    });
+    tools::handle_ingest(params, &graph, &consent)
+        .await
+        .unwrap();
+
+    let result = tools::handle_skills(&graph, &consent).await.unwrap();
+    assert!(result["work_types"].is_object(), "work_types missing");
+    assert!(result["domains"].is_array(), "domains missing");
+    assert!(result["skills"].is_array(), "skills missing");
+
+    let work_types = result["work_types"].as_object().unwrap();
+    assert!(
+        work_types.contains_key("creation"),
+        "creation work type missing"
+    );
+
+    let domains: Vec<&str> = result["domains"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|d| d["tag"].as_str().unwrap())
+        .collect();
+    assert!(
+        domains.contains(&"systems_programming"),
+        "domain tag missing"
+    );
+}
+
+#[tokio::test]
+async fn topic_summary_stored_in_preferences() {
+    let (graph, consent) = make_handles();
+    let params = serde_json::json!({
+        "tool_used": "claude",
+        "content": "",
+        "work_type": "analysis",
+        "domain_tags": ["climate_science"],
+        "topic_summary": "analyzing CO2 absorption rates in ocean data",
+    });
+    tools::handle_ingest(params, &graph, &consent)
+        .await
+        .unwrap();
+
+    let prefs = graph.get_preferences().unwrap();
+    let has_summary = prefs
+        .0
+        .iter()
+        .any(|(k, v)| k.starts_with("topic_summary:") && v.contains("CO2"));
+    assert!(has_summary, "topic summary not stored in preferences");
+}
+
+#[tokio::test]
+async fn structural_fallback_detects_work_type_from_content() {
+    let (graph, consent) = make_handles();
+    // No work_type provided — should detect "debugging" from content
+    let params = serde_json::json!({
+        "tool_used": "claude",
+        "content": "there is an error in my code that is not working and I need to fix it",
+    });
+    tools::handle_ingest(params, &graph, &consent)
+        .await
+        .unwrap();
+
+    let skills = graph.get_top_skills(50).unwrap();
+    let tags: Vec<&str> = skills.iter().map(|s| s.tag.as_str()).collect();
+    assert!(
+        tags.contains(&"wt:debugging"),
+        "structural fallback should detect debugging: {tags:?}"
+    );
+}
+
+#[tokio::test]
+async fn topic_summary_never_leaks_to_skills_response() {
+    let (graph, consent) = make_handles();
+    let params = serde_json::json!({
+        "tool_used": "claude",
+        "content": "",
+        "work_type": "research",
+        "topic_summary": "PRIVATE_SUMMARY_MARKER investigating proprietary formula",
+    });
+    tools::handle_ingest(params, &graph, &consent)
+        .await
+        .unwrap();
+
+    let skills = tools::handle_skills(&graph, &consent).await.unwrap();
+    let json = serde_json::to_string(&skills).unwrap();
+    assert!(
+        !json.contains("PRIVATE_SUMMARY_MARKER"),
+        "topic summary leaked into skills response"
+    );
+}
+
 // ── JSON-RPC routing ──────────────────────────────────────────────────────────
 
 #[tokio::test]

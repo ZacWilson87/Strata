@@ -86,6 +86,17 @@ Compile-time boundaries prevent raw content from crossing module lines:
 | `SkillTag` | Yes | Yes | All layers |
 | `DerivedSummary` | Yes | Yes | All layers |
 | `SkillNode` | Yes | Yes | `graph/` → `tools/` |
+| `WorkType` | Yes | As `wt:` tag | `signals/` → `graph/` only |
+
+### Tag Namespace Convention
+
+Tags in the `skills` table use prefixes to separate concerns:
+
+| Prefix | Example | Source |
+|---|---|---|
+| *(none)* | `rust`, `python` | Keyword extraction from content |
+| `wt:` | `wt:analysis`, `wt:debugging` | Work type — AI tool or structural fallback |
+| `dt:` | `dt:food_science`, `dt:fermentation` | Domain — AI tool pre-classification only |
 
 ---
 
@@ -106,10 +117,33 @@ JSON-RPC 2.0 over **stdio** (newline-delimited). AI clients spawn the `strata` b
 
 | Tool name | Description |
 |---|---|
-| `strata/skills` | Ranked skill list + derived summary |
+| `strata/skills` | Ranked skill list + work types + domains + derived summary |
 | `strata/context` | Current session personalization context |
 | `strata/preferences` | Stored workflow preferences |
-| `strata/ingest` | Receive raw signals; process in-memory; discard |
+| `strata/ingest` | Receive signals; AI tool may pre-classify; raw content discarded |
+
+### AI-as-Taxonomizer Pattern
+
+Rather than running a local model to classify work type and domain, Strata delegates classification to the AI tool the user is **already running**. That tool has full context and can produce a lightweight, accurate taxonomy at session end — costing ~10–20 output tokens.
+
+The AI tool calls `strata/ingest` with pre-classified fields:
+```json
+{
+  "tool_used": "claude",
+  "content": "",
+  "work_type": "analysis",
+  "domain_tags": ["food_science", "fermentation"],
+  "topic_summary": "optimizing Maillard reaction in plant-based proteins"
+}
+```
+
+When these fields are present, `content` may be empty — Strata skips keyword extraction entirely. When absent (e.g. direct API calls), Strata falls back to structural pattern matching for `work_type` and keyword matching for skill tags.
+
+This design is:
+- **Universal** — works for any domain (food science, medicine, physics, software, etc.)
+- **Private** — Strata receives only derived taxonomy, never raw prompts
+- **Token-efficient** — one small JSON object at session end, not a summary of the conversation
+- **Hardware-agnostic** — no local model download required
 
 ---
 
@@ -133,8 +167,8 @@ Tables: `skills`, `skill_edges`, `preferences`, `audit_log`
 src/
 ├── lib.rs            Public API surface (re-exports all modules)
 ├── main.rs           Binary entry point — opens DB, starts MCP server
-├── private_mode.rs   Privacy newtypes: RawSignal, DerivedSummary, SkillTag
-├── signals/          In-memory signal processing + skill extraction
+├── private_mode.rs   Privacy newtypes: RawSignal, DerivedSummary, SkillTag, WorkType
+├── signals/          In-memory signal processing + skill/work-type/domain extraction
 ├── graph/            SQLite skill graph (schema, queries, GraphHandle)
 ├── consent/          ConsentGate + audit log
 ├── server/           MCP JSON-RPC server loop + routing

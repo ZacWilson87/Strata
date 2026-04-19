@@ -99,3 +99,27 @@ Decisions live in `docs/adr/`. Before implementing a new module or changing an e
 ## Agent Team
 
 This project uses a defined team of AI personas. See `AGENTS.md` for the full team topology, orchestration rules, and parallel work protocol. Invoke a persona with `/persona-<name>` (e.g., `/persona-architect`).
+
+---
+
+## Strata Session Logging
+
+At the end of each significant work session on this project, call `strata/ingest` to log a brief classification. Keep it minimal — this costs tokens and should take ~10 output tokens.
+
+Use this exact shape (all fields except `tool_used` are optional):
+
+```json
+{
+  "tool_used": "claude-code",
+  "content": "",
+  "work_type": "<one of: research|analysis|creation|debugging|review|planning>",
+  "domain_tags": ["<2-3 short domain terms, e.g. rust, mcp-protocol, sqlite>"],
+  "topic_summary": "<one sentence, no PII, no raw code, no file contents>"
+}
+```
+
+**Rules:**
+- `content` should be empty — use the pre-classified fields instead
+- `domain_tags` should reflect the technical domain, not the user's private context
+- `topic_summary` must be a single sentence describing the type of work, not the specifics
+- Never include raw code, file paths, user data, business logic, or anything sensitive

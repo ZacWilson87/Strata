@@ -106,6 +106,12 @@ impl GraphHandle {
         queries::set_preference(&conn, key, value)
     }
 
+    /// Delete a single preference by key.
+    pub fn delete_preference(&self, key: &str) -> Result<(), GraphError> {
+        let conn = self.conn.lock().map_err(|_| GraphError::LockPoisoned)?;
+        queries::delete_preference(&conn, key)
+    }
+
     /// Delete all skill data (called on consent revocation).
     pub fn delete_all_skills(&self) -> Result<(), GraphError> {
         let conn = self.conn.lock().map_err(|_| GraphError::LockPoisoned)?;
