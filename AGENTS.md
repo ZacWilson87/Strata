@@ -115,6 +115,32 @@ When working on a large feature, the orchestrating session should explicitly ass
 
 ---
 
+## Strata Session Logging Protocol
+
+Each persona should call `strata/ingest` at the end of a significant work unit. Keep it minimal — ~10 output tokens.
+
+```json
+{
+  "tool_used": "claude-code",
+  "content": "",
+  "work_type": "<research|analysis|creation|debugging|review|planning>",
+  "domain_tags": ["<2-3 terms reflecting the technical domain>"],
+  "topic_summary": "<one sentence, no PII, no raw code>"
+}
+```
+
+**Per-persona guidance:**
+- **Architect**: `work_type: planning`, domain_tags reflect module names (e.g. `mcp-protocol`, `graph-schema`)
+- **Rustacean**: `work_type: creation` or `debugging`, domain_tags reflect the Rust subsystem
+- **Privacy Guardian**: `work_type: review`, domain_tags: `privacy`, `consent`, `data-flow`
+- **MCP Engineer**: `work_type: creation`, domain_tags: `mcp-protocol`, `json-rpc`
+- **Quality Sentinel**: `work_type: review`, domain_tags: `testing`, `ci`, `coverage`
+- **Product Scout**: `work_type: research` or `planning`, domain_tags: `product`, `roadmap`
+
+Never include raw code, file contents, user data, or anything sensitive in the payload.
+
+---
+
 ## Agent Teams Configuration
 
 To enable parallel teammate sessions (experimental), set in `.claude/settings.json`:

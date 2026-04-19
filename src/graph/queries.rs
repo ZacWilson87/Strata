@@ -133,6 +133,12 @@ pub fn set_preference(conn: &Connection, key: &str, value: &str) -> Result<(), G
     Ok(())
 }
 
+/// Delete a single preference by key.
+pub fn delete_preference(conn: &Connection, key: &str) -> Result<(), GraphError> {
+    conn.execute("DELETE FROM preferences WHERE key = ?1", params![key])?;
+    Ok(())
+}
+
 /// Delete all skill data (called on consent revocation).
 pub fn delete_all_skills(conn: &Connection) -> Result<(), GraphError> {
     conn.execute_batch("DELETE FROM skill_edges; DELETE FROM skills;")?;

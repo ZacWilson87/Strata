@@ -5,7 +5,7 @@
 use chrono::{DateTime, Utc};
 use std::collections::HashMap;
 
-use crate::private_mode::{DerivedSummary, RawSignal, SkillTag};
+use crate::private_mode::{DerivedSummary, RawSignal, SkillTag, WorkType};
 
 /// A processed, privacy-safe workflow event. Contains no raw content.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -17,16 +17,31 @@ pub struct WorkflowSignal {
     pub domain_hint: Option<String>,
     /// Skill tags extracted from the raw signal.
     pub skill_tags: Vec<SkillTag>,
+    /// One-sentence derived summary provided by the AI tool. Never raw content.
+    pub topic_summary: Option<String>,
 }
 
 /// Payload received from an AI client via the MCP ingest endpoint.
+///
 /// The `content` field holds raw user context — processed in-memory and discarded.
+/// When `work_type`, `domain_tags`, or `topic_summary` are provided by the AI tool,
+/// `content` may be empty — the AI has already done the classification.
 #[derive(Debug, serde::Deserialize)]
 pub struct IngestPayload {
     pub tool_used: String,
-    pub domain_hint: Option<String>,
-    /// Raw content from the AI session. Never persisted.
+    /// Raw content from the AI session. Never persisted. May be empty when pre-classified.
+    #[serde(default)]
     pub content: String,
+    pub domain_hint: Option<String>,
+    /// Work type pre-classified by the AI tool (e.g. "analysis", "debugging").
+    /// When present, skips structural fallback detection.
+    pub work_type: Option<String>,
+    /// Domain tags pre-classified by the AI tool (e.g. ["food_science", "fermentation"]).
+    /// Stored with a `dt:` prefix. Universal — works for any domain.
+    pub domain_tags: Option<Vec<String>>,
+    /// One-sentence derived summary from the AI tool. No PII, no raw content.
+    /// Stored in preferences under a timestamped key; max 10 retained.
+    pub topic_summary: Option<String>,
 }
 
 /// Extract skill tags from a `RawSignal` using keyword heuristics.
@@ -68,12 +83,143 @@ pub fn extract_skills(signal: RawSignal) -> Vec<SkillTag> {
     tags
 }
 
-/// Process an ingest payload into a `WorkflowSignal`, discarding raw content.
-pub fn process_ingest(payload: IngestPayload) -> WorkflowSignal {
-    let raw = RawSignal::new(payload.content);
-    // Domain hint also contributes tags
-    let mut tags = extract_skills(raw);
+/// Detect work type from raw content using structural pattern matching.
+///
+/// This is a fallback used when the AI tool has not pre-classified the payload.
+/// The raw content is consumed here — it cannot leak after this call.
+pub fn detect_work_type(signal: &RawSignal) -> WorkType {
+    let content = signal.0.to_lowercase();
 
+    // Ordered by specificity — first match wins.
+    let patterns: &[(&[&str], WorkType)] = &[
+        (
+            &[
+                "error",
+                "exception",
+                "traceback",
+                "not working",
+                "failed",
+                "broken",
+                "bug",
+                "fix",
+                "crash",
+            ],
+            WorkType::Debugging,
+        ),
+        (
+            &[
+                "analyze",
+                "analysis",
+                "data",
+                "results",
+                "findings",
+                "correlation",
+                "trend",
+                "pattern",
+                "statistics",
+                "metrics",
+            ],
+            WorkType::Analysis,
+        ),
+        (
+            &[
+                "review", "feedback", "check", "validate", "verify", "audit", "approve",
+            ],
+            WorkType::Review,
+        ),
+        (
+            &[
+                "design",
+                "plan",
+                "architect",
+                "structure",
+                "approach",
+                "strategy",
+                "roadmap",
+                "scope",
+            ],
+            WorkType::Planning,
+        ),
+        (
+            &[
+                "what is",
+                "how does",
+                "explain",
+                "why does",
+                "understand",
+                "learn",
+                "research",
+                "investigate",
+            ],
+            WorkType::Research,
+        ),
+        (
+            &[
+                "create",
+                "build",
+                "implement",
+                "write",
+                "generate",
+                "make",
+                "develop",
+                "add",
+            ],
+            WorkType::Creation,
+        ),
+    ];
+
+    for (terms, work_type) in patterns {
+        if terms.iter().any(|t| content.contains(t)) {
+            return work_type.clone();
+        }
+    }
+
+    WorkType::Other
+}
+
+/// Process an ingest payload into a `WorkflowSignal`, discarding raw content.
+///
+/// When `work_type`, `domain_tags`, or `topic_summary` are pre-classified by the AI tool,
+/// they are used directly. Keyword extraction still runs on non-empty `content` for
+/// technology skill tags (rust, python, etc.), but is skipped when content is empty.
+pub fn process_ingest(payload: IngestPayload) -> WorkflowSignal {
+    let raw = RawSignal::new(payload.content.clone());
+    let mut tags: Vec<SkillTag> = Vec::new();
+
+    // --- Technology skill tags (keyword extraction) ---
+    // Only run if content is non-empty; AI-pre-classified payloads may omit content.
+    if !payload.content.is_empty() {
+        tags.extend(extract_skills(RawSignal::new(payload.content)));
+    }
+
+    // --- Work type tag ---
+    // Use AI-provided work_type if present; otherwise detect from content structure.
+    let work_type = if let Some(ref wt) = payload.work_type {
+        WorkType::from_str_loose(wt)
+    } else if !raw.0.is_empty() {
+        detect_work_type(&raw)
+    } else {
+        WorkType::Other
+    };
+    // Only store non-trivial work types to keep the graph clean.
+    if work_type != WorkType::Other {
+        let wt_tag = work_type.as_tag();
+        if !tags.contains(&wt_tag) {
+            tags.push(wt_tag);
+        }
+    }
+
+    // --- Domain tags (AI-provided, universal vocabulary) ---
+    if let Some(ref domain_tags) = payload.domain_tags {
+        for dt in domain_tags {
+            let dt_tag = SkillTag::new(format!("dt:{}", dt.to_lowercase()));
+            if !tags.contains(&dt_tag) {
+                tags.push(dt_tag);
+            }
+        }
+    }
+
+    // --- Legacy domain hint ---
     if let Some(ref hint) = payload.domain_hint {
         let hint_tag = SkillTag::new(hint.to_lowercase());
         if !tags.contains(&hint_tag) {
@@ -86,6 +232,7 @@ pub fn process_ingest(payload: IngestPayload) -> WorkflowSignal {
         tool_used: payload.tool_used,
         domain_hint: payload.domain_hint,
         skill_tags: tags,
+        topic_summary: payload.topic_summary,
     }
 }
 
@@ -121,8 +268,11 @@ mod tests {
     fn make_payload(content: &str, tool: &str, hint: Option<&str>) -> IngestPayload {
         IngestPayload {
             tool_used: tool.into(),
-            domain_hint: hint.map(Into::into),
             content: content.into(),
+            domain_hint: hint.map(Into::into),
+            work_type: None,
+            domain_tags: None,
+            topic_summary: None,
         }
     }
 

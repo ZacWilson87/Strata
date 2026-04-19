@@ -111,7 +111,73 @@ Add to `~/Library/Application Support/Claude/claude_desktop_config.json`:
 claude mcp add strata /path/to/strata --scope user
 ```
 
-Claude will then have access to the `strata/skills`, `strata/context`, `strata/preferences`, and `strata/ingest` tools.
+---
+
+## Integrating Your AI Tool
+
+Strata uses the AI tool you're already running as the taxonomizer. At session end, the AI calls `strata/ingest` with a brief pre-classified payload (~10–20 output tokens). Raw content stays on your machine — Strata only receives derived taxonomy.
+
+The ingest payload shape:
+```json
+{
+  "tool_used": "your-tool-name",
+  "content": "",
+  "work_type": "analysis",
+  "domain_tags": ["food_science", "fermentation"],
+  "topic_summary": "one sentence, no PII, no raw content"
+}
+```
+
+`work_type` must be one of: `research`, `analysis`, `creation`, `debugging`, `review`, `planning`
+
+### Claude Code
+
+Add to your project's `CLAUDE.md` (or `~/.claude/CLAUDE.md` for all projects):
+
+```markdown
+## Strata Session Logging
+At the end of each work session, call strata/ingest with a brief classification.
+Keep it minimal — use this shape:
+{"tool_used":"claude-code","content":"","work_type":"<type>","domain_tags":["<2-3 terms>"],"topic_summary":"<one sentence>"}
+Never include raw code, file contents, or sensitive data.
+```
+
+### Claude Desktop
+
+Add to your Claude system prompt:
+
+```
+At the end of each conversation, call strata/ingest with:
+{"tool_used":"claude","content":"","work_type":"<research|analysis|creation|debugging|review|planning>","domain_tags":["<2-3 domain terms>"],"topic_summary":"<one sentence summary of work type only>"}
+No raw content. No PII. One call per session.
+```
+
+### Cursor
+
+Add to `.cursorrules` in your project root:
+
+```
+After completing a significant task, call strata/ingest via MCP:
+tool_used: "cursor"
+content: ""  (leave empty)
+work_type: one of research/analysis/creation/debugging/review/planning
+domain_tags: 2-3 short terms describing the technical domain
+topic_summary: one sentence, no code, no file names, no sensitive data
+```
+
+### GitHub Copilot / Generic MCP Tool
+
+Add to your `AGENT.md` or equivalent instructions file:
+
+```
+Strata MCP integration: at session end, call strata/ingest with
+{"tool_used":"<tool-name>","content":"","work_type":"<type>","domain_tags":["<terms>"],"topic_summary":"<sentence>"}
+Keep it under 20 output tokens. Never send raw content.
+```
+
+### Any MCP-compatible tool
+
+Strata implements the MCP 2024-11-05 protocol. Any tool supporting `tools/call` can call `strata/ingest` directly. The `content` field is optional when pre-classified fields are provided.
 
 ### Run the desktop dashboard
 

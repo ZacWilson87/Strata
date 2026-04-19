@@ -26,6 +26,55 @@ impl DerivedSummary {
     }
 }
 
+/// The type of work being performed in a session. Derived by the AI tool, never from raw content.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum WorkType {
+    Research,  // learning, reading, investigating
+    Analysis,  // interpreting data, results, findings
+    Creation,  // building, writing, generating
+    Debugging, // fixing errors, troubleshooting
+    Review,    // reviewing, validating, checking
+    Planning,  // designing, architecting, scoping
+    #[default]
+    Other,
+}
+
+impl std::fmt::Display for WorkType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let s = match self {
+            WorkType::Research => "research",
+            WorkType::Analysis => "analysis",
+            WorkType::Creation => "creation",
+            WorkType::Debugging => "debugging",
+            WorkType::Review => "review",
+            WorkType::Planning => "planning",
+            WorkType::Other => "other",
+        };
+        write!(f, "{s}")
+    }
+}
+
+impl WorkType {
+    /// Parse from a string, case-insensitive. Falls back to `Other`.
+    pub fn from_str_loose(s: &str) -> Self {
+        match s.to_lowercase().as_str() {
+            "research" => WorkType::Research,
+            "analysis" | "analyze" => WorkType::Analysis,
+            "creation" | "create" | "building" | "build" => WorkType::Creation,
+            "debugging" | "debug" => WorkType::Debugging,
+            "review" => WorkType::Review,
+            "planning" | "plan" => WorkType::Planning,
+            _ => WorkType::Other,
+        }
+    }
+
+    /// The tag prefix used when stored in the skills table.
+    pub fn as_tag(&self) -> SkillTag {
+        SkillTag::new(format!("wt:{self}"))
+    }
+}
+
 /// A skill tag extracted from workflow signals. Safe to persist.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct SkillTag(pub String);

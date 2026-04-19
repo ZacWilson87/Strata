@@ -126,15 +126,18 @@ pub async fn dispatch(
                     },
                     {
                         "name": tools::TOOL_INGEST,
-                        "description": "Ingests a workflow signal. Raw content is processed in-memory and discarded; only skill tags are persisted.",
+                        "description": "Ingests a workflow signal. When work_type/domain_tags are provided by the AI tool, content may be empty — the AI has already classified the session. Raw content is never stored.",
                         "inputSchema": {
                             "type": "object",
                             "properties": {
                                 "tool_used": { "type": "string", "description": "Name of the AI tool used (e.g. 'claude', 'cursor')" },
-                                "content": { "type": "string", "description": "Raw signal content — never stored, consumed in-memory only" },
-                                "domain_hint": { "type": ["string", "null"], "description": "Optional domain hint to guide skill extraction" }
+                                "content": { "type": "string", "description": "Raw signal content — never stored. May be empty when pre-classified fields are provided." },
+                                "domain_hint": { "type": ["string", "null"], "description": "Optional domain hint to guide skill extraction" },
+                                "work_type": { "type": ["string", "null"], "description": "Work type pre-classified by the AI tool. One of: research, analysis, creation, debugging, review, planning" },
+                                "domain_tags": { "type": ["array", "null"], "items": { "type": "string" }, "description": "Domain tags pre-classified by the AI tool (e.g. ['food_science', 'fermentation']). Universal — any domain." },
+                                "topic_summary": { "type": ["string", "null"], "description": "One sentence derived summary from the AI tool. No PII, no raw content. Max 10 retained." }
                             },
-                            "required": ["tool_used", "content"]
+                            "required": ["tool_used"]
                         }
                     }
                 ]

@@ -29,6 +29,11 @@ pub enum ToolError {
 }
 
 /// Handle `strata/skills` — returns the user's top skill tags as a derived summary.
+///
+/// Response is categorized into three buckets:
+/// - `skills`: technology/concept tags (no prefix)
+/// - `work_types`: aggregated counts of `wt:` prefixed tags
+/// - `domains`: `dt:` prefixed domain tags provided by AI tools
 pub async fn handle_skills(
     graph: &Arc<GraphHandle>,
     consent: &Arc<ConsentGate>,
@@ -36,10 +41,31 @@ pub async fn handle_skills(
     consent.check()?;
     consent.record(AuditEvent::SkillQueried)?;
     let summary = graph.get_skill_summary()?;
-    let skills = graph.get_top_skills(20)?;
+    let all_skills = graph.get_top_skills(100)?;
+
+    let mut skills = Vec::new();
+    let mut work_types: std::collections::HashMap<String, f64> = std::collections::HashMap::new();
+    let mut domains = Vec::new();
+
+    for node in all_skills {
+        if let Some(wt) = node.tag.strip_prefix("wt:") {
+            *work_types.entry(wt.to_string()).or_insert(0.0) += node.strength;
+        } else if let Some(dt) = node.tag.strip_prefix("dt:") {
+            domains.push(serde_json::json!({
+                "tag": dt,
+                "strength": node.strength,
+                "session_count": node.session_count,
+            }));
+        } else {
+            skills.push(node);
+        }
+    }
+
     Ok(serde_json::json!({
         "summary": summary.as_str(),
         "skills": skills,
+        "work_types": work_types,
+        "domains": domains,
     }))
 }
 
@@ -93,12 +119,43 @@ pub async fn handle_ingest(
         }
     }
 
+    // Store topic summary if provided (max 10 retained, keyed by timestamp).
+    if let Some(ref summary) = signal.topic_summary {
+        let key = format!("topic_summary:{}", signal.timestamp.timestamp_millis());
+        graph.set_preference(&key, summary)?;
+        evict_old_topic_summaries(graph, 10)?;
+    }
+
     consent.record(AuditEvent::SkillIngested { count: tag_count })?;
 
     Ok(serde_json::json!({
         "ingested": tag_count,
         "tool": signal.tool_used,
     }))
+}
+
+/// Evict oldest topic summary preferences beyond `max_count`.
+fn evict_old_topic_summaries(
+    graph: &Arc<GraphHandle>,
+    max_count: usize,
+) -> Result<(), crate::graph::queries::GraphError> {
+    let prefs = graph.get_preferences()?;
+    let mut summary_keys: Vec<String> = prefs
+        .0
+        .keys()
+        .filter(|k| k.starts_with("topic_summary:"))
+        .cloned()
+        .collect();
+
+    if summary_keys.len() > max_count {
+        // Keys include timestamp millis — sort ascending to find oldest.
+        summary_keys.sort();
+        let excess = summary_keys.len() - max_count;
+        for key in summary_keys.into_iter().take(excess) {
+            graph.delete_preference(&key)?;
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]
