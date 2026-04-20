@@ -354,7 +354,7 @@ async fn unknown_method_returns_method_not_found() {
     let req = JsonRpcRequest {
         jsonrpc: "2.0".into(),
         id: serde_json::json!(1),
-        method: "strata/does_not_exist".into(),
+        method: "strata_does_not_exist".into(),
         params: None,
     };
     let resp = dispatch(req, &graph, &consent).await.unwrap();

@@ -23,7 +23,7 @@ The user is already running an AI tool (Claude, Cursor, Copilot, etc.) that has 
 
 Use **Option C**: the AI tool the user is already running acts as the taxonomizer.
 
-At session end, the AI tool calls `strata/ingest` with pre-classified fields:
+At session end, the AI tool calls `strata_ingest` with pre-classified fields:
 
 ```json
 {
@@ -51,7 +51,7 @@ A structural pattern-matching fallback (question patterns, error patterns, creat
 - No schema migration required — prefixed tags flow through the existing `skills` table
 
 **Negative / trade-offs:**
-- Classification only happens if the AI tool is configured to call `strata/ingest` at session end. Users must add instructions to CLAUDE.md / .cursorrules / AGENT.md / system prompt for their tool.
+- Classification only happens if the AI tool is configured to call `strata_ingest` at session end. Users must add instructions to CLAUDE.md / .cursorrules / AGENT.md / system prompt for their tool.
 - Quality depends on the AI tool following instructions correctly. A tool that skips the ingest call produces no classification for that session.
 - The structural fallback for `work_type` is less accurate than AI classification, especially for ambiguous content.
 
