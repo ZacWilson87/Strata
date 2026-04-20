@@ -135,7 +135,7 @@ pub async fn dispatch(
                                 "domain_hint": { "type": ["string", "null"], "description": "Optional domain hint to guide skill extraction" },
                                 "work_type": { "type": ["string", "null"], "description": "Work type pre-classified by the AI tool. One of: research, analysis, creation, debugging, review, planning" },
                                 "domain_tags": { "type": ["array", "null"], "items": { "type": "string" }, "description": "Domain tags pre-classified by the AI tool (e.g. ['food_science', 'fermentation']). Universal — any domain." },
-                                "topic_summary": { "type": ["string", "null"], "description": "One sentence derived summary from the AI tool. No PII, no raw content. Max 50 retained." },
+                                "topic_summary": { "type": ["string", "null"], "maxLength": 500, "description": "One-sentence derived summary from the AI tool. No PII, no raw content. Truncated server-side at 500 chars. Max 50 retained." },
                                 "conversation_id": { "type": ["string", "null"], "description": "Optional stable identifier for the conversation. Groups multiple work units from the same chat." }
                             },
                             "required": ["tool_used"]

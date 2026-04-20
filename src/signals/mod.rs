@@ -235,6 +235,15 @@ pub fn process_ingest(payload: IngestPayload) -> WorkflowSignal {
         }
     }
 
+    // --- Tool usage tracking ---
+    // Store the AI tool name so the dashboard can show a tool usage breakdown.
+    if !payload.tool_used.is_empty() {
+        let tool_tag = SkillTag::new(format!("tool:{}", payload.tool_used.to_lowercase()));
+        if !tags.contains(&tool_tag) {
+            tags.push(tool_tag);
+        }
+    }
+
     WorkflowSignal {
         timestamp: Utc::now(),
         tool_used: payload.tool_used,
