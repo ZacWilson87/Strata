@@ -235,6 +235,15 @@ pub fn process_ingest(payload: IngestPayload) -> WorkflowSignal {
         }
     }
 
+    // --- Tool usage tracking ---
+    // Store the AI tool name so the dashboard can show a tool usage breakdown.
+    if !payload.tool_used.is_empty() {
+        let tool_tag = SkillTag::new(format!("tool:{}", payload.tool_used.to_lowercase()));
+        if !tags.contains(&tool_tag) {
+            tags.push(tool_tag);
+        }
+    }
+
     WorkflowSignal {
         timestamp: Utc::now(),
         tool_used: payload.tool_used,
@@ -594,11 +603,16 @@ mod tests {
     fn process_ingest_empty_content_no_preclassification_has_no_wt_tag() {
         let payload = make_payload("", "claude", None);
         let signal = process_ingest(payload);
+        // No wt: tag without preclassification and no detectable keywords
         assert!(!signal
             .skill_tags
             .iter()
             .any(|t| t.as_str().starts_with("wt:")));
-        assert!(signal.skill_tags.is_empty());
+        // tool: tag is expected from tool_used field
+        assert!(signal
+            .skill_tags
+            .iter()
+            .all(|t| t.as_str().starts_with("tool:")));
     }
 
     #[test]

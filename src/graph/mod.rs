@@ -13,8 +13,8 @@ use rusqlite::Connection;
 use crate::private_mode::{DerivedSummary, SkillTag};
 
 pub use queries::{
-    CoOccurrenceSummary, GraphError, Preferences, SkillEdge, SkillNode, SkillNodeWithVelocity,
-    SkillVelocity, TopicSummaryEntry, VelocityDirection,
+    AuditEntry, CoOccurrenceSummary, GraphError, Preferences, SkillEdge, SkillNode,
+    SkillNodeWithVelocity, SkillVelocity, TopicSummaryEntry, VelocityDirection, WeeklySnapshot,
 };
 
 /// Thread-safe handle to the skill graph database.
@@ -117,6 +117,22 @@ impl GraphHandle {
     pub fn delete_preference(&self, key: &str) -> Result<(), GraphError> {
         let conn = self.conn.lock().map_err(|_| GraphError::LockPoisoned)?;
         queries::delete_preference(&conn, key)
+    }
+
+    /// Return the most recent `limit` audit log entries (newest first).
+    ///
+    /// Runs a WAL checkpoint first so entries written by the ConsentGate's
+    /// connection (same strata.db file) are visible here.
+    pub fn get_audit_log(&self, limit: usize) -> Result<Vec<AuditEntry>, GraphError> {
+        let conn = self.conn.lock().map_err(|_| GraphError::LockPoisoned)?;
+        let _ = conn.execute_batch("PRAGMA wal_checkpoint(PASSIVE);");
+        queries::get_audit_log(&conn, limit)
+    }
+
+    /// Return per-week skill activity snapshots for the last `weeks` weeks.
+    pub fn get_skill_history(&self, weeks: usize) -> Result<Vec<WeeklySnapshot>, GraphError> {
+        let conn = self.conn.lock().map_err(|_| GraphError::LockPoisoned)?;
+        queries::get_skill_history(&conn, weeks)
     }
 
     /// Delete all skill data (called on consent revocation).

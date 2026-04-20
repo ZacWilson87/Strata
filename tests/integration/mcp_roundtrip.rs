@@ -343,6 +343,108 @@ async fn topic_summary_never_leaks_to_skills_response() {
     );
 }
 
+// ── topic_summary validation ─────────────────────────────────────────────────
+
+#[tokio::test]
+async fn topic_summary_truncated_at_500_chars() {
+    let (graph, consent) = make_handles();
+    let long_summary = "x".repeat(600);
+    let params = serde_json::json!({
+        "tool_used": "claude",
+        "content": "",
+        "work_type": "analysis",
+        "topic_summary": long_summary,
+    });
+    tools::handle_ingest(params, &graph, &consent)
+        .await
+        .unwrap();
+
+    let prefs = graph.get_preferences().unwrap();
+    let stored = prefs
+        .0
+        .values()
+        .find(|v| v.starts_with('x'))
+        .expect("topic_summary should be stored");
+    assert!(
+        stored.chars().count() <= 500,
+        "topic_summary was not truncated: {} chars",
+        stored.chars().count()
+    );
+}
+
+// ── tool usage tracking ───────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn ingest_stores_tool_tag() {
+    let (graph, consent) = make_handles();
+    let params = serde_json::json!({
+        "tool_used": "cursor",
+        "content": "",
+        "work_type": "creation",
+    });
+    tools::handle_ingest(params, &graph, &consent)
+        .await
+        .unwrap();
+
+    let skills = tools::handle_skills(&graph, &consent).await.unwrap();
+    let tool_usage = skills["tool_usage"].as_object().unwrap();
+    assert!(
+        tool_usage.contains_key("cursor"),
+        "tool_usage should contain 'cursor'"
+    );
+}
+
+// ── audit log read interface ──────────────────────────────────────────────────
+
+#[tokio::test]
+async fn audit_log_reflects_ingestion() {
+    // ConsentGate and GraphHandle both write to the same strata.db in production;
+    // in-memory DBs are separate, so this test requires a shared file.
+    let tmp = tempfile::NamedTempFile::new().unwrap().into_temp_path();
+    let path = tmp.to_str().unwrap();
+    let graph = Arc::new(GraphHandle::open(path).unwrap());
+    let consent_conn = rusqlite::Connection::open(path).unwrap();
+    let consent = Arc::new(strata::consent::ConsentGate::new(consent_conn).unwrap());
+
+    let params = serde_json::json!({"tool_used": "claude", "content": "", "work_type": "review"});
+    tools::handle_ingest(params.clone(), &graph, &consent)
+        .await
+        .unwrap();
+    tools::handle_ingest(params, &graph, &consent)
+        .await
+        .unwrap();
+
+    let log = graph.get_audit_log(20).unwrap();
+    let ingested_count = log.iter().filter(|e| e.event == "skill_ingested").count();
+    assert!(
+        ingested_count >= 2,
+        "should have at least 2 skill_ingested events"
+    );
+}
+
+// ── skill history ─────────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn skill_history_returns_recent_snapshots() {
+    let (graph, consent) = make_handles();
+    // Upsert some skills so there's data in the last 8 weeks.
+    graph.upsert_skill(&SkillTag::new("rust")).unwrap();
+    graph.upsert_skill(&SkillTag::new("async")).unwrap();
+
+    let history = graph.get_skill_history(8).unwrap();
+    // At minimum the current week should appear.
+    assert!(
+        !history.is_empty(),
+        "skill history should be non-empty after upserts"
+    );
+    assert!(
+        history
+            .iter()
+            .any(|s| s.top_tags.contains(&"rust".to_string())),
+        "rust should appear in skill history"
+    );
+}
+
 // ── JSON-RPC routing ──────────────────────────────────────────────────────────
 
 #[tokio::test]

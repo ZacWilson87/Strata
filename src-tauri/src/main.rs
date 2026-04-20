@@ -26,6 +26,9 @@ fn main() {
             commands::get_consent_status,
             commands::pause_consent,
             commands::resume_consent,
+            commands::revoke_consent,
+            commands::get_audit_log,
+            commands::get_skill_history,
         ])
         .setup(|app| {
             let data_dir = data_dir(app).unwrap_or_else(|| ".".into());

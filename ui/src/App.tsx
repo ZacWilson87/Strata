@@ -1,10 +1,12 @@
 import { useState } from "react";
 import SkillMap from "./components/SkillMap";
 import ConsentControls from "./components/ConsentControls";
+import GrowthTimeline from "./components/GrowthTimeline";
 import type { Tab } from "./types";
 
 const TABS: { id: Tab; label: string }[] = [
   { id: "skills", label: "Skill Map" },
+  { id: "growth", label: "Growth" },
   { id: "consent", label: "Privacy & Consent" },
 ];
 
@@ -49,6 +51,7 @@ export default function App() {
 
       <main style={{ flex: 1, overflow: "auto", padding: 20 }}>
         {activeTab === "skills" && <SkillMap />}
+        {activeTab === "growth" && <GrowthTimeline />}
         {activeTab === "consent" && <ConsentControls />}
       </main>
     </div>

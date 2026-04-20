@@ -199,6 +199,117 @@ pub fn delete_all_skills(conn: &Connection) -> Result<(), GraphError> {
     Ok(())
 }
 
+/// A single entry from the audit log.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct AuditEntry {
+    pub event: String,
+    pub detail: Option<String>,
+    pub occurred_at: String,
+}
+
+/// Return the most recent `limit` audit log entries, newest first.
+pub fn get_audit_log(conn: &Connection, limit: usize) -> Result<Vec<AuditEntry>, GraphError> {
+    let mut stmt = conn.prepare(
+        "SELECT event, detail, occurred_at
+         FROM audit_log
+         ORDER BY occurred_at DESC
+         LIMIT ?1",
+    )?;
+    let entries = stmt
+        .query_map(params![limit as i64], |row| {
+            Ok(AuditEntry {
+                event: row.get(0)?,
+                detail: row.get(1)?,
+                occurred_at: row.get(2)?,
+            })
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(entries)
+}
+
+/// A snapshot of skill activity for a single ISO week.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct WeeklySnapshot {
+    /// ISO week label, e.g. "2026-W15".
+    pub week: String,
+    /// Top skill tags (no prefix) active during this week, ordered by strength.
+    pub top_tags: Vec<String>,
+    /// Count of distinct skills active during this week.
+    pub total_sessions: i64,
+}
+
+/// Return per-week skill activity for the last `weeks` weeks.
+///
+/// Groups raw skill tags (no prefix) by their `last_seen` ISO week. Returns
+/// weeks in ascending order so the UI can render a left-to-right timeline.
+pub fn get_skill_history(
+    conn: &Connection,
+    weeks: usize,
+) -> Result<Vec<WeeklySnapshot>, GraphError> {
+    // Query all non-prefix skills and filter by age in Rust to avoid SQLite
+    // timezone-offset comparison issues with RFC3339 timestamps.
+    let mut stmt = conn.prepare(
+        "SELECT tag, strength, last_seen
+         FROM skills
+         WHERE tag NOT LIKE 'wt:%'
+           AND tag NOT LIKE 'dt:%'
+           AND tag NOT LIKE 'tool:%'
+         ORDER BY strength DESC",
+    )?;
+
+    let cutoff = chrono::Utc::now() - chrono::Duration::weeks(weeks as i64);
+
+    let rows: Vec<(String, f64, String)> = stmt
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?
+        .collect::<Result<Vec<_>, _>>()?;
+
+    // Filter by age in Rust where datetime parsing is reliable.
+    let rows: Vec<(String, f64, String)> = rows
+        .into_iter()
+        .filter(|(_, _, ts)| {
+            DateTime::parse_from_rfc3339(ts)
+                .map(|dt| dt.with_timezone(&chrono::Utc) >= cutoff)
+                .unwrap_or(false)
+        })
+        .collect();
+
+    // Group by ISO week derived from last_seen timestamp prefix "YYYY-MM-DD".
+    use std::collections::BTreeMap;
+    let mut by_week: BTreeMap<String, (Vec<(String, f64)>, i64)> = BTreeMap::new();
+
+    for (tag, strength, last_seen) in rows {
+        let week = iso_week_from_timestamp(&last_seen);
+        let entry = by_week.entry(week).or_default();
+        entry.0.push((tag, strength));
+        entry.1 += 1;
+    }
+
+    let snapshots = by_week
+        .into_iter()
+        .map(|(week, (mut tags, total_sessions))| {
+            tags.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+            WeeklySnapshot {
+                week,
+                top_tags: tags.into_iter().take(5).map(|(t, _)| t).collect(),
+                total_sessions,
+            }
+        })
+        .collect();
+
+    Ok(snapshots)
+}
+
+/// Derive an ISO week label ("YYYY-WNN") from an RFC3339 timestamp string.
+fn iso_week_from_timestamp(ts: &str) -> String {
+    use chrono::{Datelike, NaiveDate};
+    let date_part = ts.get(..10).unwrap_or("1970-01-01");
+    if let Ok(d) = date_part.parse::<NaiveDate>() {
+        format!("{}-W{:02}", d.iso_week().year(), d.iso_week().week())
+    } else {
+        "unknown".into()
+    }
+}
+
 /// Write (or replace) today's snapshot for a skill. One row per (tag, day) is kept.
 ///
 /// Uses UTC midnight as the day boundary so all ingests on the same calendar day

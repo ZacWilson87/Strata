@@ -2,7 +2,12 @@
 ///
 /// In development (non-Tauri), falls back to mock data so the UI can run
 /// with `npm run dev` without a compiled Rust backend.
-import type { SkillsResponse, PreferencesResponse } from "./types";
+import type {
+  AuditLogResponse,
+  PreferencesResponse,
+  SkillHistoryResponse,
+  SkillsResponse,
+} from "./types";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type TauriInvoke = (cmd: string, args?: Record<string, unknown>) => Promise<any>;
@@ -35,6 +40,23 @@ const MOCK_SKILLS: SkillsResponse = {
     { tag: "sqlite", strength: 4, session_count: 4 },
     { tag: "tauri", strength: 3, session_count: 3 },
   ],
+  tool_usage: { "claude-code": 18, "cursor": 6 },
+};
+
+const MOCK_AUDIT_LOG: AuditLogResponse = {
+  entries: [
+    { event: "skill_ingested", detail: "count=5", occurred_at: new Date().toISOString() },
+    { event: "skill_queried", detail: null, occurred_at: new Date(Date.now() - 60_000).toISOString() },
+    { event: "consent_granted", detail: null, occurred_at: new Date(Date.now() - 3_600_000).toISOString() },
+  ],
+};
+
+const MOCK_SKILL_HISTORY: SkillHistoryResponse = {
+  weeks: [
+    { week: "2026-W14", top_tags: ["rust", "async", "sql"], total_sessions: 8 },
+    { week: "2026-W15", top_tags: ["rust", "typescript", "react"], total_sessions: 12 },
+    { week: "2026-W16", top_tags: ["rust", "tauri", "mcp"], total_sessions: 15 },
+  ],
 };
 
 export async function getSkills(): Promise<SkillsResponse> {
@@ -63,4 +85,18 @@ export async function pauseConsent(): Promise<void> {
 
 export async function resumeConsent(): Promise<void> {
   if (invoke) return invoke("resume_consent");
+}
+
+export async function revokeConsent(): Promise<void> {
+  if (invoke) return invoke("revoke_consent");
+}
+
+export async function getAuditLog(): Promise<AuditLogResponse> {
+  if (invoke) return invoke("get_audit_log");
+  return MOCK_AUDIT_LOG;
+}
+
+export async function getSkillHistory(): Promise<SkillHistoryResponse> {
+  if (invoke) return invoke("get_skill_history");
+  return MOCK_SKILL_HISTORY;
 }

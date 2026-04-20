@@ -86,29 +86,57 @@ pub struct ConsentGate {
 }
 
 impl ConsentGate {
-    /// Create a new consent gate backed by the given SQLite connection.
-    /// Defaults to `Granted` for MVP — a real product would show an onboarding consent screen.
+    /// Open (or create) the consent gate from the given SQLite connection.
+    ///
+    /// Creates the `audit_log` and `consent_state` tables if they don't exist.
+    /// Reads any previously persisted status from `consent_state` so that
+    /// a paused or revoked state survives server restarts. Defaults to `Granted`
+    /// only on first run (no prior row in `consent_state`).
     pub fn new(conn: Connection) -> Result<Self, ConsentError> {
-        let gate = Self {
-            status: Arc::new(Mutex::new(ConsentStatus::Granted)),
-            conn: Arc::new(Mutex::new(conn)),
-        };
-        gate.record(AuditEvent::ConsentGranted)?;
-        Ok(gate)
-    }
-
-    /// Open an in-memory consent gate (used in tests).
-    pub fn open_in_memory() -> Result<Self, ConsentError> {
-        let conn = Connection::open_in_memory()?;
-        // Ensure audit_log table exists.
         conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS audit_log (
                 id          INTEGER PRIMARY KEY AUTOINCREMENT,
                 event       TEXT NOT NULL,
                 detail      TEXT,
                 occurred_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS consent_state (
+                id         INTEGER PRIMARY KEY CHECK (id = 1),
+                status     TEXT NOT NULL DEFAULT 'granted',
+                updated_at TEXT NOT NULL
             );",
         )?;
+
+        // Restore persisted status; default to Granted only if no prior state exists.
+        let persisted: Option<String> = conn
+            .query_row("SELECT status FROM consent_state WHERE id = 1", [], |r| {
+                r.get(0)
+            })
+            .ok();
+
+        let (initial_status, is_first_run) = match persisted.as_deref() {
+            Some("paused") => (ConsentStatus::Paused, false),
+            Some("revoked") => (ConsentStatus::Revoked, false),
+            Some(_) => (ConsentStatus::Granted, false),
+            None => (ConsentStatus::Granted, true),
+        };
+
+        let gate = Self {
+            status: Arc::new(Mutex::new(initial_status)),
+            conn: Arc::new(Mutex::new(conn)),
+        };
+
+        if is_first_run {
+            gate.persist_status(&ConsentStatus::Granted)?;
+            gate.record(AuditEvent::ConsentGranted)?;
+        }
+
+        Ok(gate)
+    }
+
+    /// Open an in-memory consent gate (used in tests).
+    pub fn open_in_memory() -> Result<Self, ConsentError> {
+        let conn = Connection::open_in_memory()?;
         Self::new(conn)
     }
 
@@ -135,6 +163,7 @@ impl ConsentGate {
         let mut status = self.status.lock().map_err(|_| ConsentError::LockPoisoned)?;
         *status = ConsentStatus::Paused;
         drop(status);
+        self.persist_status(&ConsentStatus::Paused)?;
         self.record(AuditEvent::ConsentPaused)
     }
 
@@ -143,6 +172,7 @@ impl ConsentGate {
         let mut status = self.status.lock().map_err(|_| ConsentError::LockPoisoned)?;
         *status = ConsentStatus::Granted;
         drop(status);
+        self.persist_status(&ConsentStatus::Granted)?;
         self.record(AuditEvent::ConsentGranted)
     }
 
@@ -152,6 +182,7 @@ impl ConsentGate {
             let mut status = self.status.lock().map_err(|_| ConsentError::LockPoisoned)?;
             *status = ConsentStatus::Revoked;
         }
+        self.persist_status(&ConsentStatus::Revoked)?;
         self.record(AuditEvent::ConsentRevoked)?;
         graph.delete_all_skills()?;
         self.record(AuditEvent::DataDeleted)?;
@@ -168,6 +199,17 @@ impl ConsentGate {
         )?;
         Ok(())
     }
+
+    /// Persist the current consent status to the `consent_state` table.
+    fn persist_status(&self, status: &ConsentStatus) -> Result<(), ConsentError> {
+        let conn = self.conn.lock().map_err(|_| ConsentError::LockPoisoned)?;
+        let now = Utc::now().to_rfc3339();
+        conn.execute(
+            "INSERT OR REPLACE INTO consent_state (id, status, updated_at) VALUES (1, ?1, ?2)",
+            params![status.to_string(), now],
+        )?;
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -179,7 +221,7 @@ mod tests {
     fn new_gate_is_granted() {
         let gate = ConsentGate::open_in_memory().unwrap();
         assert_eq!(gate.status().unwrap(), ConsentStatus::Granted);
-        gate.check().unwrap(); // should not error
+        gate.check().unwrap();
     }
 
     #[test]
@@ -214,17 +256,7 @@ mod tests {
 
     #[test]
     fn audit_events_are_recorded() {
-        let conn = Connection::open_in_memory().unwrap();
-        conn.execute_batch(
-            "CREATE TABLE IF NOT EXISTS audit_log (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                event TEXT NOT NULL,
-                detail TEXT,
-                occurred_at TEXT NOT NULL
-            );",
-        )
-        .unwrap();
-        let gate = ConsentGate::new(conn).unwrap();
+        let gate = ConsentGate::open_in_memory().unwrap();
         gate.pause().unwrap();
 
         let count: i64 = {
@@ -232,7 +264,7 @@ mod tests {
             db.query_row("SELECT COUNT(*) FROM audit_log", [], |r| r.get(0))
                 .unwrap()
         };
-        // ConsentGranted (from new) + ConsentPaused = 2
+        // ConsentGranted (first run) + ConsentPaused = 2
         assert_eq!(count, 2);
     }
 
@@ -244,6 +276,42 @@ mod tests {
         assert_eq!(gate.status().unwrap(), ConsentStatus::Paused);
         gate.resume().unwrap();
         assert_eq!(gate.status().unwrap(), ConsentStatus::Granted);
+    }
+
+    #[test]
+    fn paused_status_persists_across_reopen() {
+        let path = tempfile::NamedTempFile::new().unwrap().into_temp_path();
+        let path_str = path.to_str().unwrap();
+
+        {
+            let conn = Connection::open(path_str).unwrap();
+            let gate = ConsentGate::new(conn).unwrap();
+            gate.pause().unwrap();
+        }
+
+        // Re-open from the same file — status must still be Paused.
+        let conn = Connection::open(path_str).unwrap();
+        let gate = ConsentGate::new(conn).unwrap();
+        assert_eq!(gate.status().unwrap(), ConsentStatus::Paused);
+        assert!(matches!(gate.check(), Err(ConsentError::Paused)));
+    }
+
+    #[test]
+    fn revoked_status_persists_across_reopen() {
+        let path = tempfile::NamedTempFile::new().unwrap().into_temp_path();
+        let path_str = path.to_str().unwrap();
+
+        {
+            let conn = Connection::open(path_str).unwrap();
+            let gate = ConsentGate::new(conn).unwrap();
+            let graph = GraphHandle::open(path_str).unwrap();
+            gate.revoke(&graph).unwrap();
+        }
+
+        let conn = Connection::open(path_str).unwrap();
+        let gate = ConsentGate::new(conn).unwrap();
+        assert_eq!(gate.status().unwrap(), ConsentStatus::Revoked);
+        assert!(matches!(gate.check(), Err(ConsentError::Revoked)));
     }
 
     #[test]
@@ -290,6 +358,35 @@ mod tests {
             .unwrap()
         };
         assert_eq!(detail.as_deref(), Some("count=7"));
+    }
+
+    #[test]
+    fn no_duplicate_granted_audit_on_restart() {
+        let path = tempfile::NamedTempFile::new().unwrap().into_temp_path();
+        let path_str = path.to_str().unwrap();
+
+        // First open → 1 ConsentGranted event
+        {
+            let conn = Connection::open(path_str).unwrap();
+            ConsentGate::new(conn).unwrap();
+        }
+
+        // Second open (not first run) → no new ConsentGranted event
+        let conn = Connection::open(path_str).unwrap();
+        let gate = ConsentGate::new(conn).unwrap();
+        let count: i64 = {
+            let db = gate.conn.lock().unwrap();
+            db.query_row(
+                "SELECT COUNT(*) FROM audit_log WHERE event = 'consent_granted'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap()
+        };
+        assert_eq!(
+            count, 1,
+            "should only have one consent_granted event across restarts"
+        );
     }
 
     #[test]
