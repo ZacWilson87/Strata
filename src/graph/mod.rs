@@ -55,8 +55,12 @@ impl GraphHandle {
     }
 
     /// Return the top `limit` skills ranked by strength.
+    ///
+    /// Runs a passive WAL checkpoint first so that writes from other processes
+    /// (e.g. the MCP server) are visible to this long-lived connection.
     pub fn get_top_skills(&self, limit: usize) -> Result<Vec<SkillNode>, GraphError> {
         let conn = self.conn.lock().map_err(|_| GraphError::LockPoisoned)?;
+        let _ = conn.execute_batch("PRAGMA wal_checkpoint(PASSIVE);");
         queries::get_top_skills(&conn, limit)
     }
 

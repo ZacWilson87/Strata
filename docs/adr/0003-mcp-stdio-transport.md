@@ -19,7 +19,7 @@ Use JSON-RPC 2.0 over stdio (newline-delimited). The server reads requests line-
 
 Request:
 ```json
-{"jsonrpc":"2.0","id":1,"method":"strata/skills","params":{}}
+{"jsonrpc":"2.0","id":1,"method":"strata_skills","params":{}}
 ```
 
 Response (success):
@@ -44,10 +44,10 @@ Response (error):
 
 | Method | Description |
 |--------|-------------|
-| `strata/skills` | Returns derived skill summary + ranked skill list |
-| `strata/context` | Returns current session personalization context |
-| `strata/preferences` | Returns stored user workflow preferences |
-| `strata/ingest` | Receives raw signals; processes in-memory; discards raw content |
+| `strata_skills` | Returns derived skill summary + ranked skill list |
+| `strata_context` | Returns current session personalization context |
+| `strata_preferences` | Returns stored user workflow preferences |
+| `strata_ingest` | Receives raw signals; processes in-memory; discards raw content |
 
 ## Consequences
 

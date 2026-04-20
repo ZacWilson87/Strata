@@ -7,10 +7,10 @@ use crate::consent::{AuditEvent, ConsentError, ConsentGate};
 use crate::graph::GraphHandle;
 use crate::signals::{process_ingest, IngestPayload};
 
-pub const TOOL_SKILLS: &str = "strata/skills";
-pub const TOOL_CONTEXT: &str = "strata/context";
-pub const TOOL_PREFERENCES: &str = "strata/preferences";
-pub const TOOL_INGEST: &str = "strata/ingest";
+pub const TOOL_SKILLS: &str = "strata_skills";
+pub const TOOL_CONTEXT: &str = "strata_context";
+pub const TOOL_PREFERENCES: &str = "strata_preferences";
+pub const TOOL_INGEST: &str = "strata_ingest";
 
 /// Error type for tool handler failures.
 #[derive(Debug, thiserror::Error)]
@@ -119,11 +119,21 @@ pub async fn handle_ingest(
         }
     }
 
-    // Store topic summary if provided (max 10 retained, keyed by timestamp).
+    // Store topic summary if provided (max 50 retained, keyed by timestamp).
+    // Key includes optional conversation_id so work units from the same chat cluster together.
     if let Some(ref summary) = signal.topic_summary {
-        let key = format!("topic_summary:{}", signal.timestamp.timestamp_millis());
+        let conv_suffix = signal
+            .conversation_id
+            .as_deref()
+            .map(|id| format!(":{}", id))
+            .unwrap_or_default();
+        let key = format!(
+            "topic_summary:{}{}",
+            signal.timestamp.timestamp_millis(),
+            conv_suffix
+        );
         graph.set_preference(&key, summary)?;
-        evict_old_topic_summaries(graph, 10)?;
+        evict_old_topic_summaries(graph, 50)?;
     }
 
     consent.record(AuditEvent::SkillIngested { count: tag_count })?;

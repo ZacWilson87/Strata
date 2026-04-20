@@ -8,9 +8,17 @@ export interface SkillNode {
   session_count: number;
 }
 
+export interface DomainNode {
+  tag: string;
+  strength: number;
+  session_count: number;
+}
+
 export interface SkillsResponse {
   summary: string;
   skills: SkillNode[];
+  work_types: Record<string, number>;
+  domains: DomainNode[];
 }
 
 export interface PreferencesResponse {

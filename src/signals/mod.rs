@@ -19,6 +19,8 @@ pub struct WorkflowSignal {
     pub skill_tags: Vec<SkillTag>,
     /// One-sentence derived summary provided by the AI tool. Never raw content.
     pub topic_summary: Option<String>,
+    /// Optional stable identifier grouping work units from the same conversation.
+    pub conversation_id: Option<String>,
 }
 
 /// Payload received from an AI client via the MCP ingest endpoint.
@@ -26,6 +28,9 @@ pub struct WorkflowSignal {
 /// The `content` field holds raw user context — processed in-memory and discarded.
 /// When `work_type`, `domain_tags`, or `topic_summary` are provided by the AI tool,
 /// `content` may be empty — the AI has already done the classification.
+///
+/// Intended to be called once per completed work unit (task, analysis, debug session, etc.),
+/// not once per conversation. Multiple calls per conversation are expected and correct.
 #[derive(Debug, serde::Deserialize)]
 pub struct IngestPayload {
     pub tool_used: String,
@@ -40,8 +45,11 @@ pub struct IngestPayload {
     /// Stored with a `dt:` prefix. Universal — works for any domain.
     pub domain_tags: Option<Vec<String>>,
     /// One-sentence derived summary from the AI tool. No PII, no raw content.
-    /// Stored in preferences under a timestamped key; max 10 retained.
+    /// Stored in preferences under a timestamped key; max 50 retained.
     pub topic_summary: Option<String>,
+    /// Optional stable identifier for the conversation this work unit belongs to.
+    /// Allows multiple work units from the same conversation to be grouped later.
+    pub conversation_id: Option<String>,
 }
 
 /// Extract skill tags from a `RawSignal` using keyword heuristics.
@@ -233,6 +241,7 @@ pub fn process_ingest(payload: IngestPayload) -> WorkflowSignal {
         domain_hint: payload.domain_hint,
         skill_tags: tags,
         topic_summary: payload.topic_summary,
+        conversation_id: payload.conversation_id,
     }
 }
 
@@ -273,6 +282,7 @@ mod tests {
             work_type: None,
             domain_tags: None,
             topic_summary: None,
+            conversation_id: None,
         }
     }
 

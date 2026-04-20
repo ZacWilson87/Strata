@@ -12,10 +12,10 @@ Strata runs locally on the user's machine. It exposes derived intelligence throu
                 │ MCP (JSON-RPC 2.0 / stdio)
 ┌───────────────▼─────────────────────┐
 │         MCP Server (src/server/)    │
-│   strata/skills                     │
-│   strata/context                    │
-│   strata/preferences                │
-│   strata/ingest  ◄── receives raw   │
+│   strata_skills                     │
+│   strata_context                    │
+│   strata_preferences                │
+│   strata_ingest  ◄── receives raw   │
 │                      signals here   │
 └───────────────┬─────────────────────┘
                 │
@@ -117,16 +117,16 @@ JSON-RPC 2.0 over **stdio** (newline-delimited). AI clients spawn the `strata` b
 
 | Tool name | Description |
 |---|---|
-| `strata/skills` | Ranked skill list + work types + domains + derived summary |
-| `strata/context` | Current session personalization context |
-| `strata/preferences` | Stored workflow preferences |
-| `strata/ingest` | Receive signals; AI tool may pre-classify; raw content discarded |
+| `strata_skills` | Ranked skill list + work types + domains + derived summary |
+| `strata_context` | Current session personalization context |
+| `strata_preferences` | Stored workflow preferences |
+| `strata_ingest` | Receive signals; AI tool may pre-classify; raw content discarded |
 
 ### AI-as-Taxonomizer Pattern
 
 Rather than running a local model to classify work type and domain, Strata delegates classification to the AI tool the user is **already running**. That tool has full context and can produce a lightweight, accurate taxonomy at session end — costing ~10–20 output tokens.
 
-The AI tool calls `strata/ingest` with pre-classified fields:
+The AI tool calls `strata_ingest` with pre-classified fields:
 ```json
 {
   "tool_used": "claude",

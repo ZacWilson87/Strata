@@ -115,10 +115,18 @@ When working on a large feature, the orchestrating session should explicitly ass
 
 ---
 
-## Strata Session Logging Protocol
+## Strata Work Unit Logging Protocol
 
-Each persona should call `strata/ingest` at the end of a significant work unit. Keep it minimal — ~10 output tokens.
+Call `strata_ingest` once per **completed work unit** — not once per session. Multiple calls per conversation are expected and correct. A work unit is a discrete deliverable: an ADR written, a module implemented, a review completed, a bug resolved.
 
+**Call triggers per persona:**
+- After writing or approving an ADR
+- After completing an implementation task
+- After finishing a review pass
+- When handing off to the next persona in the pipeline
+- When the technical topic shifts significantly
+
+**Shape** (~10 output tokens):
 ```json
 {
   "tool_used": "claude-code",

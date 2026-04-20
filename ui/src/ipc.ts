@@ -26,6 +26,15 @@ const MOCK_SKILLS: SkillsResponse = {
     { id: "3", tag: "typescript", strength: 5, last_seen: new Date().toISOString(), session_count: 5 },
     { id: "4", tag: "sql", strength: 3, last_seen: new Date().toISOString(), session_count: 3 },
   ],
+  work_types: { creation: 14, debugging: 9, analysis: 6, review: 3 },
+  domains: [
+    { tag: "rust", strength: 12, session_count: 12 },
+    { tag: "mcp-protocol", strength: 8, session_count: 8 },
+    { tag: "food_science", strength: 4, session_count: 4 },
+    { tag: "fermentation", strength: 4, session_count: 4 },
+    { tag: "sqlite", strength: 4, session_count: 4 },
+    { tag: "tauri", strength: 3, session_count: 3 },
+  ],
 };
 
 export async function getSkills(): Promise<SkillsResponse> {
