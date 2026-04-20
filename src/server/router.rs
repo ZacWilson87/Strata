@@ -181,6 +181,153 @@ pub async fn dispatch(
     Some(response)
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::consent::ConsentGate;
+    use crate::graph::GraphHandle;
+    use crate::tools::{TOOL_CONTEXT, TOOL_INGEST, TOOL_PREFERENCES, TOOL_SKILLS};
+    use std::sync::Arc;
+
+    fn make_handles() -> (Arc<GraphHandle>, Arc<ConsentGate>) {
+        let graph = Arc::new(GraphHandle::open_in_memory().unwrap());
+        let consent = Arc::new(ConsentGate::open_in_memory().unwrap());
+        (graph, consent)
+    }
+
+    fn req(id: serde_json::Value, method: &str, params: serde_json::Value) -> JsonRpcRequest {
+        JsonRpcRequest {
+            jsonrpc: "2.0".into(),
+            id,
+            method: method.into(),
+            params: Some(params),
+        }
+    }
+
+    #[test]
+    fn is_notification_true_when_id_is_null() {
+        let r = JsonRpcRequest {
+            jsonrpc: "2.0".into(),
+            id: serde_json::Value::Null,
+            method: "notifications/initialized".into(),
+            params: None,
+        };
+        assert!(r.is_notification());
+    }
+
+    #[test]
+    fn is_notification_false_when_id_is_number() {
+        let r = JsonRpcRequest {
+            jsonrpc: "2.0".into(),
+            id: serde_json::Value::Number(1.into()),
+            method: "tools/list".into(),
+            params: None,
+        };
+        assert!(!r.is_notification());
+    }
+
+    #[tokio::test]
+    async fn notification_dispatch_returns_none() {
+        let (graph, consent) = make_handles();
+        let notif = JsonRpcRequest {
+            jsonrpc: "2.0".into(),
+            id: serde_json::Value::Null,
+            method: "notifications/initialized".into(),
+            params: None,
+        };
+        let result = dispatch(notif, &graph, &consent).await;
+        assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn initialize_method_returns_protocol_version() {
+        let (graph, consent) = make_handles();
+        let r = dispatch(
+            req(serde_json::json!(1), "initialize", serde_json::json!({})),
+            &graph,
+            &consent,
+        )
+        .await
+        .unwrap();
+        assert!(r.error.is_none());
+        let result = r.result.unwrap();
+        assert_eq!(result["protocolVersion"].as_str(), Some("2024-11-05"));
+        assert!(result["capabilities"].is_object());
+        assert_eq!(result["serverInfo"]["name"].as_str(), Some("strata"));
+    }
+
+    #[tokio::test]
+    async fn tools_list_returns_all_four_tools() {
+        let (graph, consent) = make_handles();
+        let r = dispatch(
+            req(serde_json::json!(1), "tools/list", serde_json::json!({})),
+            &graph,
+            &consent,
+        )
+        .await
+        .unwrap();
+        assert!(r.error.is_none());
+        let tools = r.result.unwrap()["tools"].as_array().unwrap().clone();
+        let names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
+        assert!(names.contains(&TOOL_SKILLS));
+        assert!(names.contains(&TOOL_CONTEXT));
+        assert!(names.contains(&TOOL_PREFERENCES));
+        assert!(names.contains(&TOOL_INGEST));
+        assert_eq!(names.len(), 4);
+    }
+
+    #[tokio::test]
+    async fn tools_call_routes_to_skills() {
+        let (graph, consent) = make_handles();
+        let r = dispatch(
+            req(
+                serde_json::json!(42),
+                "tools/call",
+                serde_json::json!({ "name": TOOL_SKILLS, "arguments": {} }),
+            ),
+            &graph,
+            &consent,
+        )
+        .await
+        .unwrap();
+        assert!(r.error.is_none());
+        // tools/call wraps result in MCP content envelope
+        let content = &r.result.unwrap()["content"];
+        assert!(content.is_array());
+    }
+
+    #[tokio::test]
+    async fn tools_call_unknown_tool_returns_error() {
+        let (graph, consent) = make_handles();
+        let r = dispatch(
+            req(
+                serde_json::json!(1),
+                "tools/call",
+                serde_json::json!({ "name": "nonexistent_tool", "arguments": {} }),
+            ),
+            &graph,
+            &consent,
+        )
+        .await
+        .unwrap();
+        assert!(r.error.is_some());
+        assert_eq!(r.error.unwrap().code, -32601);
+    }
+
+    #[tokio::test]
+    async fn response_id_matches_request_id() {
+        let (graph, consent) = make_handles();
+        let r = dispatch(
+            req(serde_json::json!(99), TOOL_SKILLS, serde_json::json!({})),
+            &graph,
+            &consent,
+        )
+        .await
+        .unwrap();
+        assert_eq!(r.id, serde_json::json!(99));
+    }
+}
+
 async fn dispatch_tool(
     name: &str,
     args: serde_json::Value,

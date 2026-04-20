@@ -253,4 +253,61 @@ mod tests {
             .unwrap();
         assert_eq!(edge_count, 0);
     }
+
+    #[test]
+    fn get_top_skills_limit_zero_returns_empty() {
+        let conn = fresh_conn();
+        upsert_skill(&conn, &SkillTag::new("rust")).unwrap();
+        let top = get_top_skills(&conn, 0).unwrap();
+        assert!(top.is_empty());
+    }
+
+    #[test]
+    fn get_top_skills_on_empty_table_returns_empty() {
+        let conn = fresh_conn();
+        let top = get_top_skills(&conn, 10).unwrap();
+        assert!(top.is_empty());
+    }
+
+    #[test]
+    fn delete_preference_nonexistent_key_is_ok() {
+        let conn = fresh_conn();
+        // Deleting a key that does not exist must not error.
+        delete_preference(&conn, "no_such_key").unwrap();
+    }
+
+    #[test]
+    fn delete_all_skills_on_empty_table_is_ok() {
+        let conn = fresh_conn();
+        // Calling on an already-empty graph must be idempotent.
+        delete_all_skills(&conn).unwrap();
+        delete_all_skills(&conn).unwrap();
+    }
+
+    #[test]
+    fn malformed_datetime_falls_back_gracefully() {
+        let conn = fresh_conn();
+        // Insert a skill with a deliberately invalid last_seen value.
+        conn.execute(
+            "INSERT INTO skills (id, tag, strength, last_seen, session_count)
+             VALUES ('bad-id', 'rust', 1.0, 'not-a-valid-date', 1)",
+            [],
+        )
+        .unwrap();
+        // row_to_skill_node should fall back to Utc::now() rather than panicking.
+        let nodes = get_top_skills(&conn, 10).unwrap();
+        assert_eq!(nodes.len(), 1);
+        assert_eq!(nodes[0].tag, "rust");
+    }
+
+    #[test]
+    fn set_and_delete_preference_roundtrip() {
+        let conn = fresh_conn();
+        set_preference(&conn, "key", "value").unwrap();
+        let prefs = get_preferences(&conn).unwrap();
+        assert_eq!(prefs.get("key"), Some("value"));
+        delete_preference(&conn, "key").unwrap();
+        let prefs_after = get_preferences(&conn).unwrap();
+        assert!(prefs_after.get("key").is_none());
+    }
 }

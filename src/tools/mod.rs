@@ -255,4 +255,138 @@ mod tests {
         let err = handle_ingest(params, &graph, &consent).await.unwrap_err();
         assert!(matches!(err, ToolError::BadRequest(_)));
     }
+
+    #[tokio::test]
+    async fn ingest_records_co_occurrences_between_tags() {
+        let (graph, consent) = make_handles();
+        let params = serde_json::json!({
+            "tool_used": "claude",
+            "content": "rust async database",
+        });
+        handle_ingest(params, &graph, &consent).await.unwrap();
+        let skills = graph.get_top_skills(10).unwrap();
+        // At least rust, async, sql-adjacent tags should be stored.
+        assert!(
+            skills.len() >= 2,
+            "expected multiple skill tags from multi-keyword content"
+        );
+    }
+
+    #[tokio::test]
+    async fn ingest_with_all_optional_fields() {
+        let (graph, consent) = make_handles();
+        let params = serde_json::json!({
+            "tool_used": "claude",
+            "content": "",
+            "work_type": "analysis",
+            "domain_tags": ["food_science", "fermentation"],
+            "topic_summary": "analyzing fermentation kinetics",
+            "conversation_id": "conv-xyz",
+        });
+        let result = handle_ingest(params, &graph, &consent).await.unwrap();
+        assert!(result["ingested"].as_u64().unwrap() > 0);
+
+        let skills = graph.get_top_skills(100).unwrap();
+        let tags: Vec<&str> = skills.iter().map(|s| s.tag.as_str()).collect();
+        assert!(tags.contains(&"wt:analysis"), "work type tag missing");
+        assert!(tags.contains(&"dt:food_science"), "domain tag missing");
+        assert!(tags.contains(&"dt:fermentation"), "domain tag missing");
+
+        let prefs = graph.get_preferences().unwrap();
+        let has_summary = prefs
+            .0
+            .iter()
+            .any(|(k, v)| k.starts_with("topic_summary:") && v.contains("fermentation"));
+        assert!(has_summary, "topic summary should be stored in preferences");
+    }
+
+    #[tokio::test]
+    async fn ingest_domain_tags_stored_with_dt_prefix() {
+        let (graph, consent) = make_handles();
+        let params = serde_json::json!({
+            "tool_used": "cursor",
+            "content": "",
+            "domain_tags": ["medicine", "pharmacology"],
+        });
+        handle_ingest(params, &graph, &consent).await.unwrap();
+        let skills = graph.get_top_skills(100).unwrap();
+        let tags: Vec<&str> = skills.iter().map(|s| s.tag.as_str()).collect();
+        assert!(tags.contains(&"dt:medicine"));
+        assert!(tags.contains(&"dt:pharmacology"));
+    }
+
+    #[tokio::test]
+    async fn ingest_topic_summary_stored_in_preferences() {
+        let (graph, consent) = make_handles();
+        let params = serde_json::json!({
+            "tool_used": "claude",
+            "content": "",
+            "topic_summary": "refactoring async error handling",
+        });
+        handle_ingest(params, &graph, &consent).await.unwrap();
+        let prefs = graph.get_preferences().unwrap();
+        let stored = prefs
+            .0
+            .values()
+            .any(|v| v == "refactoring async error handling");
+        assert!(stored, "topic summary should appear in preferences");
+    }
+
+    #[tokio::test]
+    async fn evict_old_topic_summaries_keeps_max_50() {
+        let (graph, consent) = make_handles();
+        // Pre-populate 50 topic_summary preferences directly (simulating prior ingests).
+        for i in 0..50u64 {
+            graph
+                .set_preference(&format!("topic_summary:{i:016}"), &format!("summary {i}"))
+                .unwrap();
+        }
+        // One more ingest with a topic_summary should trigger eviction down to 50.
+        let params = serde_json::json!({
+            "tool_used": "claude",
+            "content": "",
+            "topic_summary": "the 51st summary",
+        });
+        handle_ingest(params, &graph, &consent).await.unwrap();
+
+        let prefs = graph.get_preferences().unwrap();
+        let count = prefs
+            .0
+            .keys()
+            .filter(|k| k.starts_with("topic_summary:"))
+            .count();
+        assert_eq!(count, 50, "should retain exactly 50 topic summaries");
+    }
+
+    #[tokio::test]
+    async fn skills_response_separates_work_types_and_domains() {
+        let (graph, consent) = make_handles();
+        let params = serde_json::json!({
+            "tool_used": "claude",
+            "content": "rust code",
+            "work_type": "debugging",
+            "domain_tags": ["embedded_systems"],
+        });
+        handle_ingest(params, &graph, &consent).await.unwrap();
+
+        let result = handle_skills(&graph, &consent).await.unwrap();
+        let skills_arr = result["skills"].as_array().unwrap();
+        let work_types = result["work_types"].as_object().unwrap();
+        let domains = result["domains"].as_array().unwrap();
+
+        // "rust" belongs in skills (no prefix)
+        assert!(skills_arr.iter().any(|s| s["tag"].as_str() == Some("rust")));
+        // "wt:debugging" should appear in work_types keyed as "debugging"
+        assert!(
+            work_types.contains_key("debugging"),
+            "work_types missing 'debugging'"
+        );
+        // "dt:embedded_systems" should appear in domains keyed as "embedded_systems"
+        assert!(
+            domains
+                .iter()
+                .any(|d| d["tag"].as_str() == Some("embedded_systems")),
+            "domains missing 'embedded_systems'"
+        );
+    }
 }

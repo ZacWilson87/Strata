@@ -245,4 +245,78 @@ mod tests {
         gate.resume().unwrap();
         assert_eq!(gate.status().unwrap(), ConsentStatus::Granted);
     }
+
+    #[test]
+    fn revoke_twice_is_idempotent() {
+        let gate = ConsentGate::open_in_memory().unwrap();
+        let graph = GraphHandle::open_in_memory().unwrap();
+        gate.revoke(&graph).unwrap();
+        // Second revoke: status is already Revoked, data already deleted — must not error.
+        gate.revoke(&graph).unwrap();
+        assert!(matches!(gate.check(), Err(ConsentError::Revoked)));
+    }
+
+    #[test]
+    fn revoke_after_pause_succeeds() {
+        let gate = ConsentGate::open_in_memory().unwrap();
+        let graph = GraphHandle::open_in_memory().unwrap();
+        gate.pause().unwrap();
+        gate.revoke(&graph).unwrap();
+        assert!(matches!(gate.check(), Err(ConsentError::Revoked)));
+    }
+
+    #[test]
+    fn skill_ingested_audit_event_records_count_detail() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS audit_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                event TEXT NOT NULL,
+                detail TEXT,
+                occurred_at TEXT NOT NULL
+            );",
+        )
+        .unwrap();
+        let gate = ConsentGate::new(conn).unwrap();
+        gate.record(AuditEvent::SkillIngested { count: 7 }).unwrap();
+
+        let detail: Option<String> = {
+            let db = gate.conn.lock().unwrap();
+            db.query_row(
+                "SELECT detail FROM audit_log WHERE event = 'skill_ingested' LIMIT 1",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap()
+        };
+        assert_eq!(detail.as_deref(), Some("count=7"));
+    }
+
+    #[test]
+    fn status_lock_poisoned_returns_error() {
+        let gate = ConsentGate::open_in_memory().unwrap();
+        let status_clone = Arc::clone(&gate.status);
+        let _ = std::thread::spawn(move || {
+            let _guard = status_clone.lock().unwrap();
+            panic!("intentional poison for test");
+        })
+        .join();
+        assert!(matches!(gate.check(), Err(ConsentError::LockPoisoned)));
+        assert!(matches!(gate.status(), Err(ConsentError::LockPoisoned)));
+    }
+
+    #[test]
+    fn conn_lock_poisoned_returns_error_on_record() {
+        let gate = ConsentGate::open_in_memory().unwrap();
+        let conn_clone = Arc::clone(&gate.conn);
+        let _ = std::thread::spawn(move || {
+            let _guard = conn_clone.lock().unwrap();
+            panic!("intentional poison for test");
+        })
+        .join();
+        assert!(matches!(
+            gate.record(AuditEvent::SkillQueried),
+            Err(ConsentError::LockPoisoned)
+        ));
+    }
 }
