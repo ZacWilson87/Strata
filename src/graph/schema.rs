@@ -9,6 +9,7 @@ pub fn migrate(conn: &Connection) -> Result<(), GraphError> {
         "
         PRAGMA journal_mode=WAL;
         PRAGMA foreign_keys=ON;
+        PRAGMA busy_timeout=5000;
 
         CREATE TABLE IF NOT EXISTS skills (
             id           TEXT PRIMARY KEY,

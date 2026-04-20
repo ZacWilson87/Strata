@@ -126,7 +126,7 @@ pub async fn dispatch(
                     },
                     {
                         "name": tools::TOOL_INGEST,
-                        "description": "Ingests a workflow signal. When work_type/domain_tags are provided by the AI tool, content may be empty — the AI has already classified the session. Raw content is never stored.",
+                        "description": "Records a completed work unit. Call once per discrete task — when you finish a feature, resolve a bug, complete a research query, or when the topic shifts significantly. Multiple calls per conversation are expected and correct. Raw content is never stored.",
                         "inputSchema": {
                             "type": "object",
                             "properties": {
@@ -135,7 +135,8 @@ pub async fn dispatch(
                                 "domain_hint": { "type": ["string", "null"], "description": "Optional domain hint to guide skill extraction" },
                                 "work_type": { "type": ["string", "null"], "description": "Work type pre-classified by the AI tool. One of: research, analysis, creation, debugging, review, planning" },
                                 "domain_tags": { "type": ["array", "null"], "items": { "type": "string" }, "description": "Domain tags pre-classified by the AI tool (e.g. ['food_science', 'fermentation']). Universal — any domain." },
-                                "topic_summary": { "type": ["string", "null"], "description": "One sentence derived summary from the AI tool. No PII, no raw content. Max 10 retained." }
+                                "topic_summary": { "type": ["string", "null"], "description": "One sentence derived summary from the AI tool. No PII, no raw content. Max 50 retained." },
+                                "conversation_id": { "type": ["string", "null"], "description": "Optional stable identifier for the conversation. Groups multiple work units from the same chat." }
                             },
                             "required": ["tool_used"]
                         }

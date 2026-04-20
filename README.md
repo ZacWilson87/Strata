@@ -122,16 +122,41 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) and [docs/adr/](docs/adr/) for the full d
 
 ## Integrating Your AI Tool
 
+Strata uses the AI tool you're already running as the taxonomizer. The AI calls `strata_ingest` once per **completed work unit** — not once per conversation. A work unit is a discrete task: a bug fixed, a feature built, a research query completed, or a significant topic shift. Multiple calls per conversation are expected and correct.
+
+Raw content never leaves your machine — Strata only receives derived taxonomy (~10–20 output tokens per work unit).
+
+**Payload shape:**
+```json
+{
+  "tool_used": "your-tool-name",
+  "content": "",
+  "work_type": "analysis",
+  "domain_tags": ["food_science", "fermentation"],
+  "topic_summary": "one sentence, no PII, no raw content"
+}
+```
+
+`work_type` must be one of: `research`, `analysis`, `creation`, `debugging`, `review`, `planning`
+
+**When to call:**
+- You complete a feature, fix, or analysis task
+- You finish answering a research question
+- The topic shifts significantly mid-conversation (log the prior unit first)
+- You complete a review or planning exercise
+
+
 ### Claude Code
 
 Add to your `CLAUDE.md` (or `~/.claude/CLAUDE.md` for all projects):
 
 ```markdown
-## Strata Session Logging
-At the end of each work session, call strata/ingest with a brief classification.
-Keep it minimal — use this shape:
+## Strata Work Unit Logging
+Call strata_ingest once per completed work unit — when you finish a task, resolve a bug,
+complete a research query, or when the topic shifts significantly. Multiple calls per
+conversation are expected.
 {"tool_used":"claude-code","content":"","work_type":"<type>","domain_tags":["<2-3 terms>"],"topic_summary":"<one sentence>"}
-Never include raw code, file contents, or sensitive data.
+Never include raw code, file contents, or sensitive data. Do not wait until end of conversation.
 ```
 
 ### Claude Desktop
@@ -139,9 +164,10 @@ Never include raw code, file contents, or sensitive data.
 Add to your Claude system prompt:
 
 ```
-At the end of each conversation, call strata/ingest with:
-{"tool_used":"claude","content":"","work_type":"<research|analysis|creation|debugging|review|planning>","domain_tags":["<2-3 domain terms>"],"topic_summary":"<one sentence summary of work type only>"}
-No raw content. No PII. One call per session.
+Call strata_ingest once per completed work unit — when you finish a task, answer a research
+question, resolve a problem, or when the topic changes significantly. Do not wait until the
+end of the conversation.
+{"tool_used":"claude","content":"","work_type":"<research|analysis|creation|debugging|review|planning>","domain_tags":["<2-3 domain terms>"],"topic_summary":"<one sentence, no PII, no raw content>"}
 ```
 
 ### Cursor
@@ -149,17 +175,42 @@ No raw content. No PII. One call per session.
 Add to `.cursorrules` in your project root:
 
 ```
-After completing a significant task, call strata/ingest via MCP:
+After completing each significant task or when topic shifts, call strata_ingest via MCP:
 tool_used: "cursor"
 content: ""  (leave empty)
 work_type: one of research/analysis/creation/debugging/review/planning
 domain_tags: 2-3 short terms describing the technical domain
 topic_summary: one sentence, no code, no file names, no sensitive data
+Call once per work unit — multiple calls per session are correct.
+```
+
+### GitHub Copilot / Generic MCP Tool
+
+Add to your `AGENT.md` or equivalent instructions file:
+
+```
+Strata MCP integration: call strata_ingest once per completed work unit (task, fix, analysis,
+or topic shift). Multiple calls per conversation are correct and expected.
+{"tool_used":"<tool-name>","content":"","work_type":"<type>","domain_tags":["<terms>"],"topic_summary":"<sentence>"}
+Keep it under 20 output tokens. Never send raw content.
 ```
 
 ### Any MCP-compatible tool
 
-Strata implements MCP 2024-11-05. Any tool supporting `tools/call` can call `strata/ingest` directly. The `content` field is optional when pre-classified fields are provided.
+Strata implements the MCP 2024-11-05 protocol. Any tool supporting `tools/call` can call `strata_ingest` directly. The `content` field is optional when pre-classified fields are provided. An optional `conversation_id` field groups multiple work units from the same conversation.
+
+### Run the desktop dashboard
+
+```bash
+cargo tauri dev
+```
+
+### Run tests
+
+```bash
+cargo test          # Rust unit + integration tests
+cd ui && npm test   # React component tests
+```
 
 ---
 

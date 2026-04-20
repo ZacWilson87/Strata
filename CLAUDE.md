@@ -102,24 +102,32 @@ This project uses a defined team of AI personas. See `AGENTS.md` for the full te
 
 ---
 
-## Strata Session Logging
+## Strata Work Unit Logging
 
-At the end of each significant work session on this project, call `strata/ingest` to log a brief classification. Keep it minimal — this costs tokens and should take ~10 output tokens.
+Call `strata_ingest` once per **completed work unit** — not once per conversation. Multiple calls per session are expected and correct.
 
-Use this exact shape (all fields except `tool_used` are optional):
+**Call when you:**
+- Finish implementing a feature or module
+- Resolve a bug or error
+- Complete a research or analysis task
+- Finish a review or planning task
+- Detect a significant topic shift mid-conversation (log the prior unit before switching)
+
+**Shape** (~10 output tokens, all fields except `tool_used` are optional):
 
 ```json
 {
   "tool_used": "claude-code",
   "content": "",
-  "work_type": "<one of: research|analysis|creation|debugging|review|planning>",
+  "work_type": "<research|analysis|creation|debugging|review|planning>",
   "domain_tags": ["<2-3 short domain terms, e.g. rust, mcp-protocol, sqlite>"],
   "topic_summary": "<one sentence, no PII, no raw code, no file contents>"
 }
 ```
 
 **Rules:**
-- `content` should be empty — use the pre-classified fields instead
-- `domain_tags` should reflect the technical domain, not the user's private context
-- `topic_summary` must be a single sentence describing the type of work, not the specifics
+- `content` must be empty — use the pre-classified fields only
+- `domain_tags` reflects the technical domain, not user's private context
+- `topic_summary` describes the type of work done, not the specifics
 - Never include raw code, file paths, user data, business logic, or anything sensitive
+- Do not wait until the end of the conversation — log each unit as it completes
