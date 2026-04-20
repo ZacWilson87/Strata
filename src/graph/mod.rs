@@ -189,4 +189,82 @@ mod tests {
         let prefs = graph.get_preferences().unwrap();
         assert_eq!(prefs.get("theme"), Some("dark"));
     }
+
+    #[test]
+    fn get_skill_summary_empty_returns_fallback() {
+        let graph = GraphHandle::open_in_memory().unwrap();
+        let summary = graph.get_skill_summary().unwrap();
+        assert_eq!(summary.as_str(), "No skills recorded yet.");
+    }
+
+    #[test]
+    fn get_context_summary_empty_returns_fallback() {
+        let graph = GraphHandle::open_in_memory().unwrap();
+        let summary = graph.get_context_summary().unwrap();
+        assert_eq!(summary.as_str(), "No context available yet.");
+    }
+
+    #[test]
+    fn get_context_summary_recent_skills_appear_in_output() {
+        let graph = GraphHandle::open_in_memory().unwrap();
+        graph.upsert_skill(&SkillTag::new("rust")).unwrap();
+        let summary = graph.get_context_summary().unwrap();
+        assert!(
+            summary.as_str().contains("rust"),
+            "recent skill should appear: {}",
+            summary.as_str()
+        );
+        assert!(summary.as_str().starts_with("Active in:"));
+    }
+
+    #[test]
+    fn get_context_summary_old_skills_return_no_recent_activity() {
+        let graph = GraphHandle::open_in_memory().unwrap();
+        graph.upsert_skill(&SkillTag::new("rust")).unwrap();
+        // Backdating the skill to 49 hours ago directly via the internal connection.
+        {
+            let conn = graph.conn.lock().unwrap();
+            let old_ts = (Utc::now() - chrono::Duration::hours(49)).to_rfc3339();
+            conn.execute(
+                "UPDATE skills SET last_seen = ?1",
+                rusqlite::params![old_ts],
+            )
+            .unwrap();
+        }
+        let summary = graph.get_context_summary().unwrap();
+        assert_eq!(summary.as_str(), "No recent activity.");
+    }
+
+    #[test]
+    fn record_co_occurrence_same_tag_returns_ok() {
+        let graph = GraphHandle::open_in_memory().unwrap();
+        let tag = SkillTag::new("rust");
+        // Self-reference guard in GraphHandle: should return Ok without creating an edge.
+        graph.record_co_occurrence(&tag, &tag).unwrap();
+        let skills = graph.get_top_skills(10).unwrap();
+        // No skills upserted because the call short-circuits before upsert.
+        assert!(skills.is_empty());
+    }
+
+    #[test]
+    fn delete_preference_nonexistent_key_is_ok() {
+        let graph = GraphHandle::open_in_memory().unwrap();
+        graph.delete_preference("no_such_key").unwrap();
+    }
+
+    #[test]
+    fn upsert_skill_returns_lock_poisoned_when_conn_is_poisoned() {
+        let graph = GraphHandle::open_in_memory().unwrap();
+        let conn_clone = Arc::clone(&graph.conn);
+        let _ = std::thread::spawn(move || {
+            let _guard = conn_clone.lock().unwrap();
+            panic!("intentional poison for test");
+        })
+        .join();
+        let tag = SkillTag::new("rust");
+        assert!(matches!(
+            graph.upsert_skill(&tag),
+            Err(GraphError::LockPoisoned)
+        ));
+    }
 }
