@@ -12,7 +12,10 @@ use rusqlite::Connection;
 
 use crate::private_mode::{DerivedSummary, SkillTag};
 
-pub use queries::{GraphError, Preferences, SkillEdge, SkillNode};
+pub use queries::{
+    CoOccurrenceSummary, GraphError, Preferences, SkillEdge, SkillNode, SkillNodeWithVelocity,
+    SkillVelocity, TopicSummaryEntry, VelocityDirection,
+};
 
 /// Thread-safe handle to the skill graph database.
 #[derive(Clone)]
@@ -120,6 +123,40 @@ impl GraphHandle {
     pub fn delete_all_skills(&self) -> Result<(), GraphError> {
         let conn = self.conn.lock().map_err(|_| GraphError::LockPoisoned)?;
         queries::delete_all_skills(&conn)
+    }
+
+    /// Write (or replace) today's snapshot for a skill.
+    pub fn upsert_daily_snapshot(
+        &self,
+        tag: &SkillTag,
+        session_count: i64,
+        strength: f64,
+    ) -> Result<(), GraphError> {
+        let conn = self.conn.lock().map_err(|_| GraphError::LockPoisoned)?;
+        queries::upsert_daily_snapshot(&conn, tag, session_count, strength)
+    }
+
+    /// Return velocity data for the top `limit` skills.
+    pub fn get_skill_velocities(&self, limit: usize) -> Result<Vec<SkillVelocity>, GraphError> {
+        let conn = self.conn.lock().map_err(|_| GraphError::LockPoisoned)?;
+        let _ = conn.execute_batch("PRAGMA wal_checkpoint(PASSIVE);");
+        queries::get_skill_velocities(&conn, limit)
+    }
+
+    /// Return the top `limit` skills enriched with velocity and co-occurrence data.
+    pub fn get_skills_with_velocity(
+        &self,
+        limit: usize,
+    ) -> Result<Vec<SkillNodeWithVelocity>, GraphError> {
+        let conn = self.conn.lock().map_err(|_| GraphError::LockPoisoned)?;
+        let _ = conn.execute_batch("PRAGMA wal_checkpoint(PASSIVE);");
+        queries::get_skills_with_velocity(&conn, limit)
+    }
+
+    /// Return all stored topic summaries, newest first.
+    pub fn get_topic_summaries(&self) -> Result<Vec<TopicSummaryEntry>, GraphError> {
+        let conn = self.conn.lock().map_err(|_| GraphError::LockPoisoned)?;
+        queries::get_topic_summaries(&conn)
     }
 }
 
