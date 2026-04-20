@@ -38,6 +38,18 @@ pub fn migrate(conn: &Connection) -> Result<(), GraphError> {
             detail       TEXT,
             occurred_at  TEXT NOT NULL
         );
+
+        CREATE TABLE IF NOT EXISTS skill_snapshots (
+            id            INTEGER PRIMARY KEY AUTOINCREMENT,
+            skill_tag     TEXT NOT NULL,
+            snapshot_at   TEXT NOT NULL,
+            session_count INTEGER NOT NULL DEFAULT 0,
+            strength      REAL NOT NULL DEFAULT 0.0,
+            UNIQUE (skill_tag, snapshot_at)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_snapshots_tag_date
+            ON skill_snapshots (skill_tag, snapshot_at DESC);
         ",
     )?;
     Ok(())
@@ -64,7 +76,13 @@ mod tests {
     fn expected_tables_exist() {
         let conn = Connection::open_in_memory().unwrap();
         migrate(&conn).unwrap();
-        for table in &["skills", "skill_edges", "preferences", "audit_log"] {
+        for table in &[
+            "skills",
+            "skill_edges",
+            "preferences",
+            "audit_log",
+            "skill_snapshots",
+        ] {
             let count: i64 = conn
                 .query_row(
                     "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?1",
