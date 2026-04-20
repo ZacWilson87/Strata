@@ -2,6 +2,11 @@
 name = "strata"
 version = "0.1.0"
 edition = "2021"
+license = "MIT"
+description = "Privacy-first local skill graph for AI workflows — MCP server in Rust"
+repository = "https://github.com/zacwilson87/strata"
+keywords = ["mcp", "ai", "privacy", "skills", "local-first"]
+categories = ["development-tools"]
 
 [lib]
 name = "strata"

@@ -371,4 +371,284 @@ mod tests {
         // Summary must not contain the raw content
         assert!(!summary.as_str().contains("sensitive user data in prompt"));
     }
+
+    // --- detect_work_type coverage ---
+
+    #[test]
+    fn detect_work_type_debugging_patterns() {
+        for keyword in &[
+            "error",
+            "exception",
+            "traceback",
+            "not working",
+            "failed",
+            "broken",
+            "bug",
+            "fix",
+            "crash",
+        ] {
+            let raw = RawSignal::new(keyword.to_string());
+            assert_eq!(
+                detect_work_type(&raw),
+                WorkType::Debugging,
+                "keyword '{keyword}' should produce Debugging"
+            );
+        }
+    }
+
+    #[test]
+    fn detect_work_type_analysis_patterns() {
+        for keyword in &[
+            "analyze",
+            "analysis",
+            "data",
+            "results",
+            "findings",
+            "correlation",
+            "trend",
+            "statistics",
+            "metrics",
+        ] {
+            let raw = RawSignal::new(keyword.to_string());
+            assert_eq!(
+                detect_work_type(&raw),
+                WorkType::Analysis,
+                "keyword '{keyword}' should produce Analysis"
+            );
+        }
+    }
+
+    #[test]
+    fn detect_work_type_review_patterns() {
+        for keyword in &[
+            "review", "feedback", "validate", "verify", "audit", "approve",
+        ] {
+            let raw = RawSignal::new(keyword.to_string());
+            assert_eq!(
+                detect_work_type(&raw),
+                WorkType::Review,
+                "keyword '{keyword}' should produce Review"
+            );
+        }
+    }
+
+    #[test]
+    fn detect_work_type_planning_patterns() {
+        for keyword in &[
+            "design",
+            "plan",
+            "architect",
+            "structure",
+            "approach",
+            "strategy",
+            "roadmap",
+            "scope",
+        ] {
+            let raw = RawSignal::new(keyword.to_string());
+            assert_eq!(
+                detect_work_type(&raw),
+                WorkType::Planning,
+                "keyword '{keyword}' should produce Planning"
+            );
+        }
+    }
+
+    #[test]
+    fn detect_work_type_research_patterns() {
+        for keyword in &[
+            "what is",
+            "how does",
+            "explain",
+            "why does",
+            "understand",
+            "learn",
+            "research",
+            "investigate",
+        ] {
+            let raw = RawSignal::new(keyword.to_string());
+            assert_eq!(
+                detect_work_type(&raw),
+                WorkType::Research,
+                "keyword '{keyword}' should produce Research"
+            );
+        }
+    }
+
+    #[test]
+    fn detect_work_type_creation_patterns() {
+        for keyword in &[
+            "create",
+            "build",
+            "implement",
+            "generate",
+            "make",
+            "develop",
+        ] {
+            let raw = RawSignal::new(keyword.to_string());
+            assert_eq!(
+                detect_work_type(&raw),
+                WorkType::Creation,
+                "keyword '{keyword}' should produce Creation"
+            );
+        }
+    }
+
+    #[test]
+    fn detect_work_type_empty_returns_other() {
+        let raw = RawSignal::new(String::new());
+        assert_eq!(detect_work_type(&raw), WorkType::Other);
+    }
+
+    #[test]
+    fn detect_work_type_unrecognized_returns_other() {
+        let raw = RawSignal::new("hello world nothing specific here".into());
+        assert_eq!(detect_work_type(&raw), WorkType::Other);
+    }
+
+    #[test]
+    fn detect_work_type_first_match_wins() {
+        // "error" (Debugging) is checked before "data" (Analysis)
+        let raw = RawSignal::new("error in the data".into());
+        assert_eq!(detect_work_type(&raw), WorkType::Debugging);
+    }
+
+    // --- extract_skills extended coverage ---
+
+    #[test]
+    fn extract_skills_all_remaining_keywords() {
+        let cases: &[(&str, &str)] = &[
+            ("python script", "python"),
+            ("javascript code", "javascript"),
+            ("react component", "react"),
+            ("api endpoint", "api"),
+            ("testing framework", "testing"),
+            ("refactor this module", "refactoring"),
+            ("debug the issue", "debugging"),
+            ("performance optimization", "performance"),
+            ("security audit", "security"),
+            ("architecture overview", "architecture"),
+            ("docker container", "docker"),
+            ("git commit history", "git"),
+            ("ci pipeline config", "ci-cd"),
+            ("deploy to production", "deployment"),
+            ("cli tool usage", "cli"),
+        ];
+        for (content, expected_tag) in cases {
+            let raw = RawSignal::new(content.to_string());
+            let tags = extract_skills(raw);
+            assert!(
+                tags.contains(&SkillTag::new(*expected_tag)),
+                "content '{content}' should produce tag '{expected_tag}'"
+            );
+        }
+    }
+
+    #[test]
+    fn extract_skills_is_case_insensitive() {
+        let raw = RawSignal::new("RUST ASYNC SQL".into());
+        let tags = extract_skills(raw);
+        assert!(tags.contains(&SkillTag::new("rust")));
+        assert!(tags.contains(&SkillTag::new("async")));
+        assert!(tags.contains(&SkillTag::new("sql")));
+    }
+
+    // --- process_ingest edge cases ---
+
+    #[test]
+    fn process_ingest_preclassified_work_type_used() {
+        let mut payload = make_payload("", "claude", None);
+        payload.work_type = Some("analysis".into());
+        let signal = process_ingest(payload);
+        assert!(signal.skill_tags.contains(&SkillTag::new("wt:analysis")));
+    }
+
+    #[test]
+    fn process_ingest_other_work_type_not_stored() {
+        // WorkType::Other is not stored — graph stays clean
+        let payload = make_payload("hello world nothing specific", "claude", None);
+        let signal = process_ingest(payload);
+        assert!(!signal
+            .skill_tags
+            .iter()
+            .any(|t| t.as_str().starts_with("wt:")));
+    }
+
+    #[test]
+    fn process_ingest_domain_tags_stored_with_dt_prefix() {
+        let mut payload = make_payload("", "claude", None);
+        payload.domain_tags = Some(vec!["food_science".into(), "fermentation".into()]);
+        let signal = process_ingest(payload);
+        assert!(signal
+            .skill_tags
+            .contains(&SkillTag::new("dt:food_science")));
+        assert!(signal
+            .skill_tags
+            .contains(&SkillTag::new("dt:fermentation")));
+    }
+
+    #[test]
+    fn process_ingest_topic_summary_and_conversation_id_preserved() {
+        let mut payload = make_payload("", "claude", None);
+        payload.topic_summary = Some("optimizing Maillard reaction".into());
+        payload.conversation_id = Some("conv-abc".into());
+        let signal = process_ingest(payload);
+        assert_eq!(
+            signal.topic_summary.as_deref(),
+            Some("optimizing Maillard reaction")
+        );
+        assert_eq!(signal.conversation_id.as_deref(), Some("conv-abc"));
+    }
+
+    #[test]
+    fn process_ingest_empty_content_no_preclassification_has_no_wt_tag() {
+        let payload = make_payload("", "claude", None);
+        let signal = process_ingest(payload);
+        // No wt: tag without preclassification and no detectable keywords
+        assert!(!signal
+            .skill_tags
+            .iter()
+            .any(|t| t.as_str().starts_with("wt:")));
+        // tool: tag is expected from tool_used field
+        assert!(signal
+            .skill_tags
+            .iter()
+            .all(|t| t.as_str().starts_with("tool:")));
+    }
+
+    #[test]
+    fn process_batch_empty_input_returns_empty() {
+        let signals = process_batch(vec![]);
+        assert!(signals.is_empty());
+    }
+
+    #[test]
+    fn aggregate_skill_counts_empty_signals_returns_empty() {
+        let counts = aggregate_skill_counts(&[]);
+        assert!(counts.is_empty());
+    }
+
+    #[test]
+    fn summarize_empty_signals_returns_empty_string() {
+        let summary = summarize(&[]);
+        assert_eq!(summary.as_str(), "");
+    }
+
+    #[test]
+    fn summarize_takes_top_five_only() {
+        // 6 distinct tags across two payloads; summarize must cap at 5
+        let payloads = vec![
+            make_payload("rust async sql database python", "claude", None),
+            make_payload("rust async sql database python", "claude", None),
+            make_payload("typescript javascript react api testing", "claude", None),
+        ];
+        let signals = process_batch(payloads);
+        let summary = summarize(&signals);
+        // Non-empty summary has at most 5 comma-separated entries
+        let count = summary.as_str().split(", ").count();
+        assert!(
+            count <= 5,
+            "expected ≤ 5 tags, got {count}: {}",
+            summary.as_str()
+        );
+    }
 }
