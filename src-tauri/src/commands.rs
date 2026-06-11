@@ -47,9 +47,7 @@ pub async fn ingest_signal(
 }
 
 #[tauri::command]
-pub async fn get_consent_status(
-    state: tauri::State<'_, AppState>,
-) -> Result<String, String> {
+pub async fn get_consent_status(state: tauri::State<'_, AppState>) -> Result<String, String> {
     state
         .consent
         .status()
@@ -76,13 +74,8 @@ pub async fn revoke_consent(state: tauri::State<'_, AppState>) -> Result<(), Str
 }
 
 #[tauri::command]
-pub async fn get_audit_log(
-    state: tauri::State<'_, AppState>,
-) -> Result<serde_json::Value, String> {
-    let entries = state
-        .graph
-        .get_audit_log(50)
-        .map_err(|e| e.to_string())?;
+pub async fn get_audit_log(state: tauri::State<'_, AppState>) -> Result<serde_json::Value, String> {
+    let entries = state.graph.get_audit_log(50).map_err(|e| e.to_string())?;
     Ok(serde_json::json!({ "entries": entries }))
 }
 
@@ -95,4 +88,47 @@ pub async fn get_skill_history(
         .get_skill_history(8)
         .map_err(|e| e.to_string())?;
     Ok(serde_json::json!({ "weeks": snapshots }))
+}
+
+#[tauri::command]
+pub async fn get_growth(state: tauri::State<'_, AppState>) -> Result<serde_json::Value, String> {
+    let skills = state
+        .graph
+        .get_skills_with_velocity(30)
+        .map_err(|e| e.to_string())?;
+    let recent_strengths = state
+        .graph
+        .get_recent_strengths()
+        .map_err(|e| e.to_string())?;
+    Ok(serde_json::json!({ "skills": skills, "recent_strengths": recent_strengths }))
+}
+
+#[tauri::command]
+pub async fn get_insights(state: tauri::State<'_, AppState>) -> Result<serde_json::Value, String> {
+    let insights = state.graph.get_insights().map_err(|e| e.to_string())?;
+    Ok(serde_json::json!({ "insights": insights }))
+}
+
+#[tauri::command]
+pub async fn dismiss_insight(id: String, state: tauri::State<'_, AppState>) -> Result<(), String> {
+    let valid = !id.is_empty()
+        && id.len() <= 128
+        && id
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '_' | ':' | '-'));
+    if !valid {
+        return Err("invalid insight id".to_string());
+    }
+    state.graph.dismiss_insight(&id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn get_topic_summaries(
+    state: tauri::State<'_, AppState>,
+) -> Result<serde_json::Value, String> {
+    let summaries = state
+        .graph
+        .get_topic_summaries()
+        .map_err(|e| e.to_string())?;
+    Ok(serde_json::json!({ "summaries": summaries }))
 }

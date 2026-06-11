@@ -29,6 +29,10 @@ fn main() {
             commands::revoke_consent,
             commands::get_audit_log,
             commands::get_skill_history,
+            commands::get_growth,
+            commands::get_topic_summaries,
+            commands::get_insights,
+            commands::dismiss_insight,
         ])
         .setup(|app| {
             let data_dir = data_dir(app).unwrap_or_else(|| ".".into());
@@ -77,8 +81,7 @@ fn data_dir(_app: &tauri::App) -> Option<String> {
     // Both processes share the same SQLite file — diverging paths produce split databases.
     #[cfg(target_os = "macos")]
     {
-        dirs::home_dir()
-            .map(|h| format!("{}/Library/Application Support/Strata", h.display()))
+        dirs::home_dir().map(|h| format!("{}/Library/Application Support/Strata", h.display()))
     }
     #[cfg(target_os = "linux")]
     {

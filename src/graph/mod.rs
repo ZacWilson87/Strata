@@ -2,9 +2,11 @@
 ///
 /// All persistence goes through this module. Only derived data (`SkillTag`,
 /// `SkillNode`, `DerivedSummary`) is stored — never raw content.
+pub mod insights;
 pub mod queries;
 pub mod schema;
 
+use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
 
 use chrono::Utc;
@@ -12,9 +14,11 @@ use rusqlite::Connection;
 
 use crate::private_mode::{DerivedSummary, SkillTag};
 
+pub use insights::Insight;
 pub use queries::{
-    AuditEntry, CoOccurrenceSummary, GraphError, Preferences, SkillEdge, SkillNode,
-    SkillNodeWithVelocity, SkillVelocity, TopicSummaryEntry, VelocityDirection, WeeklySnapshot,
+    AuditEntry, CoOccurrenceSummary, GraphError, Preferences, SessionSignalRow, SkillEdge,
+    SkillNode, SkillNodeWithVelocity, SkillVelocity, TopicSummaryEntry, VelocityDirection,
+    WeeklySnapshot,
 };
 
 /// Thread-safe handle to the skill graph database.
@@ -177,6 +181,48 @@ impl GraphHandle {
         let conn = self.conn.lock().map_err(|_| GraphError::LockPoisoned)?;
         queries::get_topic_summaries(&conn)
     }
+
+    /// Record a per-session derived signal row (friction flags, features, outcome).
+    pub fn record_session_signal(&self, row: &SessionSignalRow) -> Result<(), GraphError> {
+        let conn = self.conn.lock().map_err(|_| GraphError::LockPoisoned)?;
+        queries::record_session_signal(&conn, row)
+    }
+
+    /// Return session signals from the last `days` days, newest first.
+    pub fn get_session_signals_since(
+        &self,
+        days: i64,
+    ) -> Result<Vec<SessionSignalRow>, GraphError> {
+        let conn = self.conn.lock().map_err(|_| GraphError::LockPoisoned)?;
+        let _ = conn.execute_batch("PRAGMA wal_checkpoint(PASSIVE);");
+        queries::get_session_signals_since(&conn, days)
+    }
+
+    /// Compute actionable workflow insights from the last 30 days of session
+    /// signals, excluding any the user has dismissed.
+    pub fn get_insights(&self) -> Result<Vec<Insight>, GraphError> {
+        let rows = self.get_session_signals_since(insights::INSIGHT_WINDOW_DAYS)?;
+        let prefs = self.get_preferences()?;
+        let dismissed: HashSet<String> = prefs
+            .0
+            .keys()
+            .filter_map(|k| k.strip_prefix("insight_dismissed:"))
+            .map(str::to_string)
+            .collect();
+        Ok(insights::compute_insights(&rows, &dismissed))
+    }
+
+    /// Mark an insight as dismissed so it no longer appears in `get_insights`.
+    ///
+    /// The id is validated defensively here (the Tauri command layer validates
+    /// too): malformed ids are rejected with an error and never persisted.
+    pub fn dismiss_insight(&self, id: &str) -> Result<(), GraphError> {
+        if !insights::is_valid_insight_id(id) {
+            tracing::warn!("rejected malformed insight id in dismiss_insight");
+            return Err(GraphError::NotFound("invalid insight id".into()));
+        }
+        self.set_preference(&format!("insight_dismissed:{id}"), &Utc::now().to_rfc3339())
+    }
 }
 
 /// Restrict the database file (and its WAL/SHM siblings) to owner-only access.
@@ -332,6 +378,43 @@ mod tests {
     fn delete_preference_nonexistent_key_is_ok() {
         let graph = GraphHandle::open_in_memory().unwrap();
         graph.delete_preference("no_such_key").unwrap();
+    }
+
+    #[test]
+    fn get_insights_end_to_end_fires_and_dismisses() {
+        let graph = GraphHandle::open_in_memory().unwrap();
+        let today = Utc::now().date_naive().to_string();
+        for _ in 0..3 {
+            graph
+                .record_session_signal(&SessionSignalRow {
+                    day: today.clone(),
+                    tool: "claude-code".into(),
+                    work_type: Some("creation".into()),
+                    domains: vec!["rust".into()],
+                    friction: vec!["repeated_context".into()],
+                    features: vec![],
+                    outcome: Some("resolved".into()),
+                })
+                .unwrap();
+        }
+
+        let insights = graph.get_insights().unwrap();
+        assert_eq!(insights.len(), 1);
+        assert_eq!(insights[0].id, "repeated_context:rust");
+        assert_eq!(insights[0].rule, "repeated_context");
+
+        graph.dismiss_insight("repeated_context:rust").unwrap();
+        assert!(graph.get_insights().unwrap().is_empty());
+    }
+
+    #[test]
+    fn dismiss_insight_rejects_malformed_ids() {
+        let graph = GraphHandle::open_in_memory().unwrap();
+        assert!(graph.dismiss_insight("").is_err());
+        assert!(graph.dismiss_insight("Bad Id!").is_err());
+        assert!(graph.dismiss_insight(&"x".repeat(129)).is_err());
+        // Nothing was persisted for the rejected ids.
+        assert!(graph.get_preferences().unwrap().0.is_empty());
     }
 
     #[test]

@@ -21,6 +21,12 @@ pub struct WorkflowSignal {
     pub topic_summary: Option<String>,
     /// Optional stable identifier grouping work units from the same conversation.
     pub conversation_id: Option<String>,
+    /// Whitelisted friction flags reported by the AI tool (ADR 0005).
+    pub friction_signals: Vec<String>,
+    /// Sanitized names of tool features the session exercised.
+    pub features_used: Vec<String>,
+    /// Validated session outcome: "resolved" | "partial" | "unresolved".
+    pub outcome: Option<String>,
 }
 
 /// Payload received from an AI client via the MCP ingest endpoint.
@@ -50,6 +56,13 @@ pub struct IngestPayload {
     /// Optional stable identifier for the conversation this work unit belongs to.
     /// Allows multiple work units from the same conversation to be grouped later.
     pub conversation_id: Option<String>,
+    /// Derived friction flags from the AI tool (e.g. ["repeated_context"]).
+    /// Validated against a whitelist — unknown flags are dropped.
+    pub friction_signals: Option<Vec<String>>,
+    /// Tool features the session exercised (e.g. ["plan_mode", "subagents"]).
+    pub features_used: Option<Vec<String>>,
+    /// How the session ended: "resolved", "partial", or "unresolved".
+    pub outcome: Option<String>,
 }
 
 /// Maximum tags stored from a single ingest call. Bounds DB growth and the
@@ -64,6 +77,22 @@ const MAX_CONTENT_BYTES: usize = 256 * 1024;
 const MAX_TAG_CHARS: usize = 64;
 /// Maximum length of a client-supplied conversation id.
 const MAX_CONVERSATION_ID_CHARS: usize = 64;
+/// Maximum friction flags / feature names retained per ingest.
+const MAX_SESSION_SIGNALS: usize = 8;
+
+/// Canonical friction vocabulary (ADR 0005). Flags outside this list are dropped —
+/// a fixed enum keeps the insights rules deterministic and prevents freeform
+/// content from leaking in through the side door.
+pub const FRICTION_WHITELIST: &[&str] = &[
+    "repeated_context",
+    "many_corrections",
+    "restarted_approach",
+    "manual_repetition",
+    "context_lost",
+];
+
+/// Valid session outcomes.
+pub const OUTCOME_WHITELIST: &[&str] = &["resolved", "partial", "unresolved"];
 
 /// Validate and normalise a client-supplied tag fragment.
 ///
@@ -307,6 +336,33 @@ pub fn process_ingest(payload: IngestPayload) -> WorkflowSignal {
 
     tags.truncate(MAX_TAGS_PER_INGEST);
 
+    // --- Session signals (ADR 0005) ---
+    // Friction flags must match the canonical vocabulary exactly; feature names
+    // go through the same tag sanitizer as everything else client-supplied.
+    let mut friction_signals: Vec<String> = Vec::new();
+    if let Some(ref flags) = payload.friction_signals {
+        for flag in flags.iter().take(MAX_SESSION_SIGNALS) {
+            let f = flag.trim().to_lowercase();
+            if FRICTION_WHITELIST.contains(&f.as_str()) && !friction_signals.contains(&f) {
+                friction_signals.push(f);
+            }
+        }
+    }
+    let mut features_used: Vec<String> = Vec::new();
+    if let Some(ref features) = payload.features_used {
+        for feature in features.iter().take(MAX_SESSION_SIGNALS) {
+            if let Some(f) = sanitize_tag(feature) {
+                if !features_used.contains(&f) {
+                    features_used.push(f);
+                }
+            }
+        }
+    }
+    let outcome = payload.outcome.as_deref().and_then(|o| {
+        let o = o.trim().to_lowercase();
+        OUTCOME_WHITELIST.contains(&o.as_str()).then_some(o)
+    });
+
     WorkflowSignal {
         timestamp: Utc::now(),
         tool_used,
@@ -317,6 +373,9 @@ pub fn process_ingest(payload: IngestPayload) -> WorkflowSignal {
             .conversation_id
             .as_deref()
             .and_then(sanitize_conversation_id),
+        friction_signals,
+        features_used,
+        outcome,
     }
 }
 
@@ -358,6 +417,9 @@ mod tests {
             domain_tags: None,
             topic_summary: None,
             conversation_id: None,
+            friction_signals: None,
+            features_used: None,
+            outcome: None,
         }
     }
 
@@ -679,6 +741,58 @@ mod tests {
             .skill_tags
             .iter()
             .all(|t| t.as_str().starts_with("tool:")));
+    }
+
+    // --- session signals (ADR 0005) ---
+
+    #[test]
+    fn friction_signals_outside_whitelist_are_dropped() {
+        let mut payload = make_payload("", "claude", None);
+        payload.friction_signals = Some(vec![
+            "repeated_context".into(),
+            "MANY_CORRECTIONS".into(), // case-insensitive
+            "made_up_flag".into(),
+            "ignore previous instructions".into(),
+        ]);
+        let signal = process_ingest(payload);
+        assert_eq!(
+            signal.friction_signals,
+            vec![
+                "repeated_context".to_string(),
+                "many_corrections".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn features_are_sanitized_and_capped() {
+        let mut payload = make_payload("", "claude", None);
+        let mut features: Vec<String> = (0..20).map(|i| format!("feature_{i}")).collect();
+        features.push("has spaces".into());
+        features.push("plan_mode".into());
+        payload.features_used = Some(features);
+        let signal = process_ingest(payload);
+        assert!(signal.features_used.len() <= 8);
+        assert!(!signal.features_used.iter().any(|f| f.contains(' ')));
+    }
+
+    #[test]
+    fn invalid_outcome_is_dropped_valid_kept() {
+        let mut payload = make_payload("", "claude", None);
+        payload.outcome = Some("Resolved".into());
+        assert_eq!(process_ingest(payload).outcome.as_deref(), Some("resolved"));
+
+        let mut payload = make_payload("", "claude", None);
+        payload.outcome = Some("triumphant".into());
+        assert_eq!(process_ingest(payload).outcome, None);
+    }
+
+    #[test]
+    fn no_session_signal_fields_yields_empty_defaults() {
+        let signal = process_ingest(make_payload("", "claude", None));
+        assert!(signal.friction_signals.is_empty());
+        assert!(signal.features_used.is_empty());
+        assert!(signal.outcome.is_none());
     }
 
     // --- input validation ---
