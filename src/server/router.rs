@@ -147,81 +147,59 @@ pub async fn dispatch(
                 ]
             }),
         ),
-        // Standard MCP tool invocation.
+        // Standard MCP tool invocation — wraps the result in a content envelope.
         "tools/call" => {
-            let name = params
-                .get("name")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string();
+            let name = params.get("name").and_then(|v| v.as_str()).unwrap_or("");
             let args = params
                 .get("arguments")
                 .cloned()
                 .unwrap_or(serde_json::Value::Object(Default::default()));
 
-            dispatch_tool(&name, args, id, graph, consent).await
+            match call_tool(name, args, graph, consent).await {
+                Ok(result) => JsonRpcResponse::ok(
+                    id,
+                    serde_json::json!({ "content": [{ "type": "text", "text": result.to_string() }] }),
+                ),
+                Err(e) => JsonRpcResponse::error(id, e.code, e.message),
+            }
         }
-        // Legacy direct-method calls (kept for backwards compat with manual testing).
-        tools::TOOL_SKILLS => match tools::handle_skills(graph, consent).await {
-            Ok(result) => JsonRpcResponse::ok(id, result),
-            Err(e) => JsonRpcResponse::error(id, -32000, e.to_string()),
-        },
-        tools::TOOL_CONTEXT => match tools::handle_context(graph, consent).await {
-            Ok(result) => JsonRpcResponse::ok(id, result),
-            Err(e) => JsonRpcResponse::error(id, -32000, e.to_string()),
-        },
-        tools::TOOL_PREFERENCES => match tools::handle_preferences(graph, consent).await {
-            Ok(result) => JsonRpcResponse::ok(id, result),
-            Err(e) => JsonRpcResponse::error(id, -32000, e.to_string()),
-        },
-        tools::TOOL_INGEST => match tools::handle_ingest(params, graph, consent).await {
-            Ok(result) => JsonRpcResponse::ok(id, result),
-            Err(e) => JsonRpcResponse::error(id, -32000, e.to_string()),
-        },
+        // Legacy direct-method calls (kept for backwards compat with manual
+        // testing) — return the raw result without the MCP envelope.
+        tools::TOOL_SKILLS | tools::TOOL_CONTEXT | tools::TOOL_PREFERENCES | tools::TOOL_INGEST => {
+            match call_tool(&req.method, params, graph, consent).await {
+                Ok(result) => JsonRpcResponse::ok(id, result),
+                Err(e) => JsonRpcResponse::error(id, e.code, e.message),
+            }
+        }
         _ => JsonRpcResponse::error(id, -32601, format!("Method not found: {}", req.method)),
     };
 
     Some(response)
 }
 
-async fn dispatch_tool(
+/// Invoke a tool handler by name and return its raw result value.
+async fn call_tool(
     name: &str,
     args: serde_json::Value,
-    id: serde_json::Value,
     graph: &Arc<GraphHandle>,
     consent: &Arc<ConsentGate>,
-) -> JsonRpcResponse {
-    match name {
-        tools::TOOL_SKILLS => match tools::handle_skills(graph, consent).await {
-            Ok(result) => JsonRpcResponse::ok(
-                id,
-                serde_json::json!({ "content": [{ "type": "text", "text": result.to_string() }] }),
-            ),
-            Err(e) => JsonRpcResponse::error(id, -32000, e.to_string()),
-        },
-        tools::TOOL_CONTEXT => match tools::handle_context(graph, consent).await {
-            Ok(result) => JsonRpcResponse::ok(
-                id,
-                serde_json::json!({ "content": [{ "type": "text", "text": result.to_string() }] }),
-            ),
-            Err(e) => JsonRpcResponse::error(id, -32000, e.to_string()),
-        },
-        tools::TOOL_PREFERENCES => match tools::handle_preferences(graph, consent).await {
-            Ok(result) => JsonRpcResponse::ok(
-                id,
-                serde_json::json!({ "content": [{ "type": "text", "text": result.to_string() }] }),
-            ),
-            Err(e) => JsonRpcResponse::error(id, -32000, e.to_string()),
-        },
-        tools::TOOL_INGEST => match tools::handle_ingest(args, graph, consent).await {
-            Ok(result) => JsonRpcResponse::ok(
-                id,
-                serde_json::json!({ "content": [{ "type": "text", "text": result.to_string() }] }),
-            ),
-            Err(e) => JsonRpcResponse::error(id, -32000, e.to_string()),
-        },
-        _ => JsonRpcResponse::error(id, -32601, format!("Unknown tool: {name}")),
-    }
+) -> Result<serde_json::Value, JsonRpcError> {
+    let result = match name {
+        tools::TOOL_SKILLS => tools::handle_skills(graph, consent).await,
+        tools::TOOL_CONTEXT => tools::handle_context(graph, consent).await,
+        tools::TOOL_PREFERENCES => tools::handle_preferences(graph, consent).await,
+        tools::TOOL_INGEST => tools::handle_ingest(args, graph, consent).await,
+        _ => {
+            return Err(JsonRpcError {
+                code: -32601,
+                message: format!("Unknown tool: {name}"),
+            })
+        }
+    };
+    result.map_err(|e| JsonRpcError {
+        code: -32000,
+        message: e.to_string(),
+    })
 }
 
 #[cfg(test)]

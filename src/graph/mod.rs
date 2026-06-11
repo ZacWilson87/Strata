@@ -7,7 +7,7 @@ pub mod queries;
 pub mod schema;
 
 use std::collections::HashSet;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard};
 
 use chrono::Utc;
 use rusqlite::Connection;
@@ -16,10 +16,13 @@ use crate::private_mode::{DerivedSummary, SkillTag};
 
 pub use insights::Insight;
 pub use queries::{
-    AuditEntry, CoOccurrenceSummary, GraphError, Preferences, SessionSignalRow, SkillEdge,
-    SkillNode, SkillNodeWithVelocity, SkillVelocity, TopicSummaryEntry, VelocityDirection,
-    WeeklySnapshot,
+    topic_summary_key, AuditEntry, CoOccurrenceSummary, GraphError, Preferences, SessionSignalRow,
+    SkillEdge, SkillNode, SkillNodeWithVelocity, SkillVelocity, TopicSummaryEntry,
+    VelocityDirection, WeeklySnapshot, TOPIC_SUMMARY_PREFIX,
 };
+
+/// Preference-key namespace for dismissed insight ids.
+const INSIGHT_DISMISSED_PREFIX: &str = "insight_dismissed:";
 
 /// Thread-safe handle to the skill graph database.
 #[derive(Clone)]
@@ -50,10 +53,23 @@ impl GraphHandle {
         })
     }
 
+    /// Lock the shared connection.
+    fn conn(&self) -> Result<MutexGuard<'_, Connection>, GraphError> {
+        self.conn.lock().map_err(|_| GraphError::LockPoisoned)
+    }
+
+    /// Lock the shared connection after a passive WAL checkpoint, so writes
+    /// from other processes (e.g. the MCP server while the dashboard reads)
+    /// are visible to this long-lived connection.
+    fn conn_synced(&self) -> Result<MutexGuard<'_, Connection>, GraphError> {
+        let conn = self.conn()?;
+        let _ = conn.execute_batch("PRAGMA wal_checkpoint(PASSIVE);");
+        Ok(conn)
+    }
+
     /// Upsert a skill node. Increments strength and session count if it already exists.
     pub fn upsert_skill(&self, tag: &SkillTag) -> Result<SkillNode, GraphError> {
-        let conn = self.conn.lock().map_err(|_| GraphError::LockPoisoned)?;
-        queries::upsert_skill(&conn, tag)
+        queries::upsert_skill(&*self.conn()?, tag)
     }
 
     /// Record a co-occurrence edge between two skills.
@@ -61,18 +77,12 @@ impl GraphHandle {
         if a == b {
             return Ok(());
         }
-        let conn = self.conn.lock().map_err(|_| GraphError::LockPoisoned)?;
-        queries::record_co_occurrence(&conn, a, b)
+        queries::record_co_occurrence(&*self.conn()?, a, b)
     }
 
     /// Return the top `limit` skills ranked by strength.
-    ///
-    /// Runs a passive WAL checkpoint first so that writes from other processes
-    /// (e.g. the MCP server) are visible to this long-lived connection.
     pub fn get_top_skills(&self, limit: usize) -> Result<Vec<SkillNode>, GraphError> {
-        let conn = self.conn.lock().map_err(|_| GraphError::LockPoisoned)?;
-        let _ = conn.execute_batch("PRAGMA wal_checkpoint(PASSIVE);");
-        queries::get_top_skills(&conn, limit)
+        queries::get_top_skills(&*self.conn_synced()?, limit)
     }
 
     /// Produce a derived summary of the user's skill profile.
@@ -111,59 +121,53 @@ impl GraphHandle {
 
     /// Get stored user preferences.
     pub fn get_preferences(&self) -> Result<Preferences, GraphError> {
-        let conn = self.conn.lock().map_err(|_| GraphError::LockPoisoned)?;
-        queries::get_preferences(&conn)
+        queries::get_preferences(&*self.conn()?)
+    }
+
+    /// Return preference (key, value) pairs whose key starts with `prefix`.
+    pub fn get_preferences_with_prefix(
+        &self,
+        prefix: &str,
+    ) -> Result<Vec<(String, String)>, GraphError> {
+        queries::get_preferences_with_prefix(&*self.conn()?, prefix)
     }
 
     /// Set a user preference key-value pair.
     pub fn set_preference(&self, key: &str, value: &str) -> Result<(), GraphError> {
-        let conn = self.conn.lock().map_err(|_| GraphError::LockPoisoned)?;
-        queries::set_preference(&conn, key, value)
+        queries::set_preference(&*self.conn()?, key, value)
     }
 
     /// Delete a single preference by key.
     pub fn delete_preference(&self, key: &str) -> Result<(), GraphError> {
-        let conn = self.conn.lock().map_err(|_| GraphError::LockPoisoned)?;
-        queries::delete_preference(&conn, key)
+        queries::delete_preference(&*self.conn()?, key)
     }
 
     /// Return the most recent `limit` audit log entries (newest first).
-    ///
-    /// Runs a WAL checkpoint first so entries written by the ConsentGate's
-    /// connection (same strata.db file) are visible here.
     pub fn get_audit_log(&self, limit: usize) -> Result<Vec<AuditEntry>, GraphError> {
-        let conn = self.conn.lock().map_err(|_| GraphError::LockPoisoned)?;
-        let _ = conn.execute_batch("PRAGMA wal_checkpoint(PASSIVE);");
-        queries::get_audit_log(&conn, limit)
+        queries::get_audit_log(&*self.conn_synced()?, limit)
     }
 
     /// Return per-week skill activity snapshots for the last `weeks` weeks.
     pub fn get_skill_history(&self, weeks: usize) -> Result<Vec<WeeklySnapshot>, GraphError> {
-        let conn = self.conn.lock().map_err(|_| GraphError::LockPoisoned)?;
-        queries::get_skill_history(&conn, weeks)
+        queries::get_skill_history(&*self.conn()?, weeks)
     }
 
     /// Delete ALL collected data — skills, edges, events, and preferences
     /// (including topic summaries). Called on consent revocation.
     pub fn delete_all_data(&self) -> Result<(), GraphError> {
-        let conn = self.conn.lock().map_err(|_| GraphError::LockPoisoned)?;
-        queries::delete_all_data(&conn)
+        queries::delete_all_data(&*self.conn()?)
     }
 
     /// Return recency-weighted strength per tag (30-day half-life decay).
     pub fn get_recent_strengths(
         &self,
     ) -> Result<std::collections::HashMap<String, f64>, GraphError> {
-        let conn = self.conn.lock().map_err(|_| GraphError::LockPoisoned)?;
-        let _ = conn.execute_batch("PRAGMA wal_checkpoint(PASSIVE);");
-        queries::get_recent_strengths(&conn)
+        queries::get_recent_strengths(&*self.conn_synced()?)
     }
 
     /// Return velocity data for the top `limit` skills.
     pub fn get_skill_velocities(&self, limit: usize) -> Result<Vec<SkillVelocity>, GraphError> {
-        let conn = self.conn.lock().map_err(|_| GraphError::LockPoisoned)?;
-        let _ = conn.execute_batch("PRAGMA wal_checkpoint(PASSIVE);");
-        queries::get_skill_velocities(&conn, limit)
+        queries::get_skill_velocities(&*self.conn_synced()?, limit)
     }
 
     /// Return the top `limit` skills enriched with velocity and co-occurrence data.
@@ -171,21 +175,17 @@ impl GraphHandle {
         &self,
         limit: usize,
     ) -> Result<Vec<SkillNodeWithVelocity>, GraphError> {
-        let conn = self.conn.lock().map_err(|_| GraphError::LockPoisoned)?;
-        let _ = conn.execute_batch("PRAGMA wal_checkpoint(PASSIVE);");
-        queries::get_skills_with_velocity(&conn, limit)
+        queries::get_skills_with_velocity(&*self.conn_synced()?, limit)
     }
 
     /// Return all stored topic summaries, newest first.
     pub fn get_topic_summaries(&self) -> Result<Vec<TopicSummaryEntry>, GraphError> {
-        let conn = self.conn.lock().map_err(|_| GraphError::LockPoisoned)?;
-        queries::get_topic_summaries(&conn)
+        queries::get_topic_summaries(&*self.conn()?)
     }
 
     /// Record a per-session derived signal row (friction flags, features, outcome).
     pub fn record_session_signal(&self, row: &SessionSignalRow) -> Result<(), GraphError> {
-        let conn = self.conn.lock().map_err(|_| GraphError::LockPoisoned)?;
-        queries::record_session_signal(&conn, row)
+        queries::record_session_signal(&*self.conn()?, row)
     }
 
     /// Return session signals from the last `days` days, newest first.
@@ -193,35 +193,34 @@ impl GraphHandle {
         &self,
         days: i64,
     ) -> Result<Vec<SessionSignalRow>, GraphError> {
-        let conn = self.conn.lock().map_err(|_| GraphError::LockPoisoned)?;
-        let _ = conn.execute_batch("PRAGMA wal_checkpoint(PASSIVE);");
-        queries::get_session_signals_since(&conn, days)
+        queries::get_session_signals_since(&*self.conn_synced()?, days)
     }
 
     /// Compute actionable workflow insights from the last 30 days of session
     /// signals, excluding any the user has dismissed.
     pub fn get_insights(&self) -> Result<Vec<Insight>, GraphError> {
         let rows = self.get_session_signals_since(insights::INSIGHT_WINDOW_DAYS)?;
-        let prefs = self.get_preferences()?;
-        let dismissed: HashSet<String> = prefs
-            .0
-            .keys()
-            .filter_map(|k| k.strip_prefix("insight_dismissed:"))
-            .map(str::to_string)
+        let dismissed: HashSet<String> = self
+            .get_preferences_with_prefix(INSIGHT_DISMISSED_PREFIX)?
+            .into_iter()
+            .filter_map(|(k, _)| k.strip_prefix(INSIGHT_DISMISSED_PREFIX).map(str::to_string))
             .collect();
         Ok(insights::compute_insights(&rows, &dismissed))
     }
 
     /// Mark an insight as dismissed so it no longer appears in `get_insights`.
     ///
-    /// The id is validated defensively here (the Tauri command layer validates
-    /// too): malformed ids are rejected with an error and never persisted.
+    /// The id is validated here, at the single entry point to persistence:
+    /// malformed ids are rejected with an error and never stored.
     pub fn dismiss_insight(&self, id: &str) -> Result<(), GraphError> {
         if !insights::is_valid_insight_id(id) {
             tracing::warn!("rejected malformed insight id in dismiss_insight");
             return Err(GraphError::NotFound("invalid insight id".into()));
         }
-        self.set_preference(&format!("insight_dismissed:{id}"), &Utc::now().to_rfc3339())
+        self.set_preference(
+            &format!("{INSIGHT_DISMISSED_PREFIX}{id}"),
+            &Utc::now().to_rfc3339(),
+        )
     }
 }
 
