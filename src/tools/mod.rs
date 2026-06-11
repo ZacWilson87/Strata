@@ -160,6 +160,31 @@ pub async fn handle_ingest(
         evict_old_topic_summaries(graph, 50)?;
     }
 
+    // Record a session-signal row for the insights engine when the AI tool
+    // reported any derived workflow signals (ADR 0005).
+    if !signal.friction_signals.is_empty()
+        || !signal.features_used.is_empty()
+        || signal.outcome.is_some()
+    {
+        let row = crate::graph::SessionSignalRow {
+            day: signal.timestamp.date_naive().to_string(),
+            tool: signal.tool_used.clone(),
+            work_type: signal
+                .skill_tags
+                .iter()
+                .find_map(|t| t.as_str().strip_prefix("wt:").map(str::to_string)),
+            domains: signal
+                .skill_tags
+                .iter()
+                .filter_map(|t| t.as_str().strip_prefix("dt:").map(str::to_string))
+                .collect(),
+            friction: signal.friction_signals.clone(),
+            features: signal.features_used.clone(),
+            outcome: signal.outcome.clone(),
+        };
+        graph.record_session_signal(&row)?;
+    }
+
     consent.record(AuditEvent::SkillIngested {
         count: tag_count,
         tool: signal.tool_used.clone(),

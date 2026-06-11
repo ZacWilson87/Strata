@@ -235,6 +235,7 @@ pub fn delete_all_data(conn: &Connection) -> Result<(), GraphError> {
         "DELETE FROM skill_edges;
          DELETE FROM skills;
          DELETE FROM skill_events;
+         DELETE FROM session_signals;
          DELETE FROM preferences;",
     )?;
     // Best-effort scrub: checkpoint failure (e.g. another connection holds a
@@ -535,6 +536,92 @@ pub fn get_topic_summaries(conn: &Connection) -> Result<Vec<TopicSummaryEntry>, 
 
     entries.sort_by(|a, b| b.timestamp_ms.cmp(&a.timestamp_ms));
     Ok(entries)
+}
+
+/// A derived per-session workflow signal used by the insights engine.
+///
+/// Contains only validated enum flags and sanitized tags — never raw content.
+/// See ADR 0005 (derived friction signals).
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct SessionSignalRow {
+    /// UTC day the signal was recorded ("YYYY-MM-DD").
+    pub day: String,
+    /// Sanitized tool name (e.g. "claude-code").
+    pub tool: String,
+    /// Work type for the session, if classified (e.g. "debugging").
+    pub work_type: Option<String>,
+    /// Sanitized domain tags active in the session (no `dt:` prefix).
+    pub domains: Vec<String>,
+    /// Whitelisted friction flags reported by the AI tool.
+    pub friction: Vec<String>,
+    /// Sanitized names of tool features the session exercised.
+    pub features: Vec<String>,
+    /// Session outcome: "resolved" | "partial" | "unresolved".
+    pub outcome: Option<String>,
+}
+
+/// Record a per-session derived signal row for the insights engine.
+pub fn record_session_signal(conn: &Connection, row: &SessionSignalRow) -> Result<(), GraphError> {
+    conn.execute(
+        "INSERT INTO session_signals (day, tool, work_type, domains, friction, features, outcome)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+        params![
+            row.day,
+            row.tool,
+            row.work_type,
+            row.domains.join(" "),
+            row.friction.join(" "),
+            row.features.join(" "),
+            row.outcome,
+        ],
+    )?;
+    Ok(())
+}
+
+/// Return all session signals from the last `days` days, newest first.
+pub fn get_session_signals_since(
+    conn: &Connection,
+    days: i64,
+) -> Result<Vec<SessionSignalRow>, GraphError> {
+    let cutoff = (Utc::now() - chrono::Duration::days(days))
+        .date_naive()
+        .to_string();
+    let mut stmt = conn.prepare(
+        "SELECT day, tool, work_type, domains, friction, features, outcome
+         FROM session_signals
+         WHERE day >= ?1
+         ORDER BY day DESC, id DESC",
+    )?;
+
+    let split = |s: String| -> Vec<String> { s.split_whitespace().map(str::to_string).collect() };
+
+    let rows = stmt
+        .query_map(params![cutoff], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, Option<String>>(2)?,
+                r.get::<_, String>(3)?,
+                r.get::<_, String>(4)?,
+                r.get::<_, String>(5)?,
+                r.get::<_, Option<String>>(6)?,
+            ))
+        })?
+        .collect::<Result<Vec<_>, _>>()?
+        .into_iter()
+        .map(
+            |(day, tool, work_type, domains, friction, features, outcome)| SessionSignalRow {
+                day,
+                tool,
+                work_type,
+                domains: split(domains),
+                friction: split(friction),
+                features: split(features),
+                outcome,
+            },
+        )
+        .collect();
+    Ok(rows)
 }
 
 fn row_to_skill_node(row: &rusqlite::Row<'_>) -> rusqlite::Result<SkillNode> {

@@ -577,6 +577,62 @@ async fn skills_response_includes_recent_strength() {
     );
 }
 
+// ── session signals (ADR 0005) ───────────────────────────────────────────────
+
+/// Friction signals flow ingest → session_signals → insights window, are
+/// whitelisted end-to-end, and are wiped by revocation.
+#[tokio::test]
+async fn session_signals_roundtrip_and_revocation_wipe() {
+    let tmp = tempfile::NamedTempFile::new().unwrap().into_temp_path();
+    let path = tmp.to_str().unwrap();
+    let graph = Arc::new(GraphHandle::open(path).unwrap());
+    let consent = Arc::new(ConsentGate::new(rusqlite::Connection::open(path).unwrap()).unwrap());
+
+    let params = serde_json::json!({
+        "tool_used": "claude-code",
+        "content": "",
+        "work_type": "debugging",
+        "domain_tags": ["rust"],
+        "friction_signals": ["repeated_context", "not_a_real_flag"],
+        "features_used": ["plan_mode"],
+        "outcome": "unresolved",
+    });
+    tools::handle_ingest(params, &graph, &consent)
+        .await
+        .unwrap();
+
+    let rows = graph.get_session_signals_since(30).unwrap();
+    assert_eq!(rows.len(), 1);
+    let row = &rows[0];
+    assert_eq!(row.tool, "claude-code");
+    assert_eq!(row.work_type.as_deref(), Some("debugging"));
+    assert_eq!(row.domains, vec!["rust".to_string()]);
+    assert_eq!(
+        row.friction,
+        vec!["repeated_context".to_string()],
+        "non-whitelisted flag must be dropped"
+    );
+    assert_eq!(row.features, vec!["plan_mode".to_string()]);
+    assert_eq!(row.outcome.as_deref(), Some("unresolved"));
+
+    consent.revoke(&graph).unwrap();
+    assert!(
+        graph.get_session_signals_since(30).unwrap().is_empty(),
+        "session signals must not survive revocation"
+    );
+}
+
+/// An ingest without any session-signal fields writes no session_signals row.
+#[tokio::test]
+async fn ingest_without_signals_writes_no_session_row() {
+    let (graph, consent) = make_handles();
+    let params = serde_json::json!({"tool_used": "claude", "content": "rust code"});
+    tools::handle_ingest(params, &graph, &consent)
+        .await
+        .unwrap();
+    assert!(graph.get_session_signals_since(30).unwrap().is_empty());
+}
+
 // ── JSON-RPC routing ──────────────────────────────────────────────────────────
 
 #[tokio::test]

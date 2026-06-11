@@ -49,6 +49,19 @@ pub fn migrate(conn: &Connection) -> Result<(), GraphError> {
 
         CREATE INDEX IF NOT EXISTS idx_events_day ON skill_events (day);
 
+        CREATE TABLE IF NOT EXISTS session_signals (
+            id        INTEGER PRIMARY KEY AUTOINCREMENT,
+            day       TEXT NOT NULL,
+            tool      TEXT NOT NULL,
+            work_type TEXT,
+            domains   TEXT NOT NULL DEFAULT '',
+            friction  TEXT NOT NULL DEFAULT '',
+            features  TEXT NOT NULL DEFAULT '',
+            outcome   TEXT
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_session_signals_day ON session_signals (day);
+
         DROP TABLE IF EXISTS skill_snapshots;
         ",
     )?;
@@ -82,6 +95,7 @@ mod tests {
             "preferences",
             "audit_log",
             "skill_events",
+            "session_signals",
         ] {
             let count: i64 = conn
                 .query_row(

@@ -121,7 +121,10 @@ Call `strata_ingest` once per **completed work unit** — not once per conversat
   "content": "",
   "work_type": "<research|analysis|creation|debugging|review|planning>",
   "domain_tags": ["<2-3 short domain terms, e.g. rust, mcp-protocol, sqlite>"],
-  "topic_summary": "<one sentence, no PII, no raw code, no file contents>"
+  "topic_summary": "<one sentence, no PII, no raw code, no file contents>",
+  "friction_signals": ["<only clear cases: repeated_context|many_corrections|restarted_approach|manual_repetition|context_lost>"],
+  "features_used": ["<tool capabilities exercised, snake_case: plan_mode, subagents, hooks, code_review, ...>"],
+  "outcome": "<resolved|partial|unresolved>"
 }
 ```
 
@@ -130,4 +133,6 @@ Call `strata_ingest` once per **completed work unit** — not once per conversat
 - `domain_tags` reflects the technical domain, not user's private context
 - `topic_summary` describes the type of work done, not the specifics
 - Never include raw code, file paths, user data, business logic, or anything sensitive
+- `friction_signals`: report only unambiguous cases (e.g. the user re-explained project context, corrected output 3+ times, or an approach was abandoned and redone); omit the field when none apply
+- `outcome`: resolved = goal achieved, partial = progress but incomplete, unresolved = blocked or abandoned
 - Do not wait until the end of the conversation — log each unit as it completes

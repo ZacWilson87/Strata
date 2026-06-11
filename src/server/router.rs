@@ -136,7 +136,10 @@ pub async fn dispatch(
                                 "work_type": { "type": ["string", "null"], "description": "Work type pre-classified by the AI tool. One of: research, analysis, creation, debugging, review, planning" },
                                 "domain_tags": { "type": ["array", "null"], "items": { "type": "string" }, "description": "Domain tags pre-classified by the AI tool (e.g. ['food_science', 'fermentation']). Universal — any domain." },
                                 "topic_summary": { "type": ["string", "null"], "maxLength": 500, "description": "One-sentence derived summary from the AI tool. No PII, no raw content. Truncated server-side at 500 chars. Max 50 retained." },
-                                "conversation_id": { "type": ["string", "null"], "description": "Optional stable identifier for the conversation. Groups multiple work units from the same chat." }
+                                "conversation_id": { "type": ["string", "null"], "description": "Optional stable identifier for the conversation. Groups multiple work units from the same chat." },
+                                "friction_signals": { "type": ["array", "null"], "items": { "type": "string", "enum": ["repeated_context", "many_corrections", "restarted_approach", "manual_repetition", "context_lost"] }, "description": "Derived friction observed in this work unit: repeated_context (user had to re-explain project/context), many_corrections (output corrected 3+ times), restarted_approach (an approach was abandoned and redone), manual_repetition (user manually repeated a mechanical task the tool could do), context_lost (the session lost earlier context). Report only clear cases." },
+                                "features_used": { "type": ["array", "null"], "items": { "type": "string" }, "description": "Tool capabilities this work unit exercised (e.g. plan_mode, subagents, hooks, code_review). Lowercase snake_case names." },
+                                "outcome": { "type": ["string", "null"], "enum": ["resolved", "partial", "unresolved", null], "description": "How the work unit ended: resolved (goal achieved), partial (progress but incomplete), unresolved (abandoned or blocked)." }
                             },
                             "required": ["tool_used"]
                         }
