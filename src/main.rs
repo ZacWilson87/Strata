@@ -9,8 +9,11 @@ use strata::server::McpServer;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    // Logs MUST go to stderr: stdout is the JSON-RPC channel, and any stray
+    // line on it corrupts the MCP stream.
     tracing_subscriber::fmt()
         .with_env_filter(EnvFilter::from_default_env())
+        .with_writer(std::io::stderr)
         .init();
 
     let data_dir = dirs_data_dir().unwrap_or_else(|| ".".into());
