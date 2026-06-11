@@ -39,165 +39,81 @@ export default function ConsentControls() {
     handle(revokeConsent);
   };
 
+  const lamp = status ?? "granted";
+
   return (
-    <section style={{ maxWidth: 560 }}>
-      <h2 style={{ fontSize: 16, fontWeight: 600, marginBottom: 8, color: "#f3f4f6" }}>
-        Privacy & Consent
-      </h2>
-      <p style={{ fontSize: 13, color: "#6b7280", marginBottom: 20 }}>
-        Strata only collects derived skill signals — never raw prompts or private content.
-        You can pause or permanently revoke data collection at any time.
-      </p>
+    <section style={{ maxWidth: 620 }}>
+      <header className="page-head rise">
+        <div className="kicker">Your data, your rules</div>
+        <h1 className="h-display">Privacy &amp; Consent</h1>
+        <p className="sub" style={{ marginTop: 8, maxWidth: 480 }}>
+          Strata only collects derived skill signals — never raw prompts or private content.
+          You can pause or permanently revoke data collection at any time.
+        </p>
+      </header>
 
       {/* Status & controls */}
-      <div
-        style={{
-          background: "#18181b",
-          border: "1px solid #27272a",
-          borderRadius: 10,
-          padding: 20,
-          marginBottom: 16,
-        }}
-      >
-        <div style={{ marginBottom: 16 }}>
-          <span style={{ fontSize: 13, color: "#9ca3af" }}>Status: </span>
-          <span
-            style={{
-              fontSize: 13,
-              fontWeight: 600,
-              color:
-                status === "granted"
-                  ? "#22c55e"
-                  : status === "paused"
-                  ? "#f59e0b"
-                  : "#ef4444",
-            }}
-          >
-            {status ?? "…"}
-          </span>
+      <div className="card seam rise rise-1" style={{ padding: 20, marginBottom: 14 }}>
+        <div className="consent-status">
+          <span className={`lamp ${lamp}`} aria-hidden="true" />
+          <span className="sub">Status:</span>
+          <span className={`word ${lamp}`}>{status ?? "…"}</span>
         </div>
 
         <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
           {status === "granted" && (
-            <ActionButton
-              label="Pause collection"
-              onClick={() => handle(pauseConsent)}
-              disabled={busy}
-              variant="warning"
-            />
+            <button className="btn-solid btn warning" onClick={() => handle(pauseConsent)} disabled={busy}>
+              Pause collection
+            </button>
           )}
           {status === "paused" && (
-            <ActionButton
-              label="Resume collection"
-              onClick={() => handle(resumeConsent)}
-              disabled={busy}
-              variant="primary"
-            />
+            <button className="btn-solid btn primary" onClick={() => handle(resumeConsent)} disabled={busy}>
+              Resume collection
+            </button>
           )}
           {status !== "revoked" && (
-            <ActionButton
-              label="Revoke & delete all data"
-              onClick={handleRevoke}
-              disabled={busy}
-              variant="danger"
-            />
+            <button className="btn-solid btn danger" onClick={handleRevoke} disabled={busy}>
+              Revoke &amp; delete all data
+            </button>
           )}
           {status === "revoked" && (
-            <p style={{ fontSize: 13, color: "#ef4444", margin: 0 }}>
+            <p className="sub" style={{ color: "var(--rust)", margin: 0 }}>
               Consent revoked. All skill data has been deleted.
             </p>
           )}
         </div>
       </div>
 
-      {error && <p style={{ color: "#ef4444", fontSize: 13, marginBottom: 12 }}>{error}</p>}
+      {error && <p className="sub" style={{ color: "var(--rust)", marginBottom: 12 }}>{error}</p>}
 
-      <p style={{ fontSize: 12, color: "#4b5563", marginBottom: 24 }}>
-        All data is stored locally on your device. No data is sent to any server.
+      <p className="mono rise rise-2" style={{ fontSize: 10.5, color: "var(--ink-faint)", marginBottom: 28, letterSpacing: "0.05em" }}>
+        ⌂ All data is stored locally on your device. No data is sent to any server.
       </p>
 
       {/* Audit log */}
-      <div>
-        <h3 style={{ fontSize: 14, fontWeight: 600, color: "#9ca3af", marginBottom: 10 }}>
-          Collection Log
-        </h3>
+      <div className="rise rise-3">
+        <div className="section-head">
+          <div>
+            <h2 className="h-section">Collection Log</h2>
+            <p className="sub" style={{ marginTop: 3 }}>Every operation Strata performs, on the record</p>
+          </div>
+        </div>
         {auditLog.length === 0 ? (
-          <p style={{ fontSize: 13, color: "#4b5563" }}>No activity recorded yet.</p>
+          <p className="sub">No activity recorded yet.</p>
         ) : (
-          <div
-            style={{
-              background: "#18181b",
-              border: "1px solid #27272a",
-              borderRadius: 8,
-              overflow: "hidden",
-            }}
-          >
+          <div className="audit-table">
             {auditLog.slice(0, 20).map((entry, i) => (
-              <div
-                key={i}
-                style={{
-                  display: "flex",
-                  justifyContent: "space-between",
-                  alignItems: "center",
-                  padding: "8px 14px",
-                  borderBottom: i < Math.min(auditLog.length, 20) - 1 ? "1px solid #27272a" : "none",
-                }}
-              >
-                <div>
-                  <span style={{ fontSize: 12, color: "#e5e7eb", fontFamily: "monospace" }}>
-                    {entry.event}
-                  </span>
-                  {entry.detail && (
-                    <span style={{ fontSize: 11, color: "#6b7280", marginLeft: 8 }}>
-                      {entry.detail}
-                    </span>
-                  )}
+              <div key={i} className="audit-row">
+                <div style={{ minWidth: 0 }}>
+                  <span className="evt">{entry.event}</span>
+                  {entry.detail && <span className="det">{entry.detail}</span>}
                 </div>
-                <span style={{ fontSize: 11, color: "#4b5563", whiteSpace: "nowrap", marginLeft: 12 }}>
-                  {new Date(entry.occurred_at).toLocaleString()}
-                </span>
+                <span className="when">{new Date(entry.occurred_at).toLocaleString()}</span>
               </div>
             ))}
           </div>
         )}
       </div>
     </section>
-  );
-}
-
-function ActionButton({
-  label,
-  onClick,
-  disabled,
-  variant,
-}: {
-  label: string;
-  onClick: () => void;
-  disabled: boolean;
-  variant: "primary" | "warning" | "danger";
-}) {
-  const colors = {
-    primary: { bg: "#2563eb" },
-    warning: { bg: "#d97706" },
-    danger: { bg: "#dc2626" },
-  };
-  return (
-    <button
-      onClick={onClick}
-      disabled={disabled}
-      style={{
-        padding: "8px 16px",
-        borderRadius: 6,
-        border: "none",
-        cursor: disabled ? "not-allowed" : "pointer",
-        background: disabled ? "#374151" : colors[variant].bg,
-        color: "#fff",
-        fontSize: 13,
-        fontWeight: 500,
-        opacity: disabled ? 0.6 : 1,
-      }}
-    >
-      {label}
-    </button>
   );
 }

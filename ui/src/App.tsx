@@ -4,55 +4,50 @@ import ConsentControls from "./components/ConsentControls";
 import GrowthTimeline from "./components/GrowthTimeline";
 import type { Tab } from "./types";
 
-const TABS: { id: Tab; label: string }[] = [
-  { id: "skills", label: "Skill Map" },
-  { id: "growth", label: "Growth" },
-  { id: "consent", label: "Privacy & Consent" },
+const TABS: { id: Tab; label: string; idx: string }[] = [
+  { id: "skills", label: "Skill Map", idx: "01" },
+  { id: "growth", label: "Growth", idx: "02" },
+  { id: "consent", label: "Privacy & Consent", idx: "03" },
 ];
 
 export default function App() {
   const [activeTab, setActiveTab] = useState<Tab>("skills");
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", height: "100vh" }}>
-      <header
-        style={{
-          padding: "12px 20px",
-          borderBottom: "1px solid #222",
-          display: "flex",
-          alignItems: "center",
-          gap: 24,
-        }}
-      >
-        <span style={{ fontWeight: 700, fontSize: 18, letterSpacing: "-0.5px" }}>
-          Strata
-        </span>
-        <nav style={{ display: "flex", gap: 8 }}>
+    <div className="shell">
+      <aside className="rail">
+        <div className="brand">
+          <div className="brand-mark" aria-hidden="true">
+            <span /><span /><span /><span />
+          </div>
+          <div className="brand-name">Strata</div>
+        </div>
+
+        <nav aria-label="Sections">
           {TABS.map((t) => (
             <button
               key={t.id}
               onClick={() => setActiveTab(t.id)}
-              style={{
-                padding: "6px 14px",
-                borderRadius: 6,
-                border: "none",
-                cursor: "pointer",
-                background: activeTab === t.id ? "#2563eb" : "transparent",
-                color: activeTab === t.id ? "#fff" : "#9ca3af",
-                fontWeight: 500,
-                fontSize: 14,
-              }}
+              className={`rail-link${activeTab === t.id ? " active" : ""}`}
             >
+              <span className="idx">{t.idx}</span>
               {t.label}
             </button>
           ))}
         </nav>
-      </header>
 
-      <main style={{ flex: 1, overflow: "auto", padding: 20 }}>
-        {activeTab === "skills" && <SkillMap />}
-        {activeTab === "growth" && <GrowthTimeline />}
-        {activeTab === "consent" && <ConsentControls />}
+        <div className="rail-foot">
+          <span className="dot" aria-hidden="true" />
+          local-first · no cloud
+        </div>
+      </aside>
+
+      <main className="stage">
+        <div className="stage-inner" key={activeTab}>
+          {activeTab === "skills" && <SkillMap />}
+          {activeTab === "growth" && <GrowthTimeline />}
+          {activeTab === "consent" && <ConsentControls />}
+        </div>
       </main>
     </div>
   );

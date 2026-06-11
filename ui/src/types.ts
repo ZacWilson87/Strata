@@ -48,3 +48,56 @@ export interface WeeklySnapshot {
 export interface SkillHistoryResponse {
   weeks: WeeklySnapshot[];
 }
+
+export type VelocityDirection = "accelerating" | "stable" | "declining" | "new";
+
+export interface SkillVelocity {
+  tag: string;
+  direction: VelocityDirection;
+  delta: number;
+  recent_sessions: number;
+}
+
+export interface CoOccurrenceSummary {
+  tag: string;
+  co_occurrence: number;
+}
+
+export interface SkillWithVelocity {
+  id: string;
+  tag: string;
+  strength: number;
+  last_seen: string;
+  session_count: number;
+  velocity: SkillVelocity;
+  co_occurrences: CoOccurrenceSummary[];
+}
+
+export interface GrowthResponse {
+  skills: SkillWithVelocity[];
+  recent_strengths: Record<string, number>;
+}
+
+export interface TopicSummaryEntry {
+  timestamp_ms: number;
+  summary: string;
+  conversation_id: string | null;
+}
+
+export interface TopicSummariesResponse {
+  summaries: TopicSummaryEntry[];
+}
+
+/** A craft insight produced by the local rules engine (ADR 0005). */
+export interface Insight {
+  id: string;
+  rule: string;
+  title: string;
+  body: string;
+  evidence: string;
+  window_days: number;
+}
+
+export interface InsightsResponse {
+  insights: Insight[];
+}
