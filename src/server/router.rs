@@ -135,7 +135,7 @@ pub async fn dispatch(
                                 "domain_hint": { "type": ["string", "null"], "description": "Optional domain hint to guide skill extraction" },
                                 "work_type": { "type": ["string", "null"], "description": "Work type pre-classified by the AI tool. One of: research, analysis, creation, debugging, review, planning" },
                                 "domain_tags": { "type": ["array", "null"], "items": { "type": "string" }, "description": "Domain tags pre-classified by the AI tool (e.g. ['food_science', 'fermentation']). Universal — any domain." },
-                                "topic_summary": { "type": ["string", "null"], "description": "One sentence derived summary from the AI tool. No PII, no raw content. Max 50 retained." },
+                                "topic_summary": { "type": ["string", "null"], "maxLength": 500, "description": "One-sentence derived summary from the AI tool. No PII, no raw content. Truncated server-side at 500 chars. Max 50 retained." },
                                 "conversation_id": { "type": ["string", "null"], "description": "Optional stable identifier for the conversation. Groups multiple work units from the same chat." }
                             },
                             "required": ["tool_used"]
@@ -179,6 +179,46 @@ pub async fn dispatch(
     };
 
     Some(response)
+}
+
+async fn dispatch_tool(
+    name: &str,
+    args: serde_json::Value,
+    id: serde_json::Value,
+    graph: &Arc<GraphHandle>,
+    consent: &Arc<ConsentGate>,
+) -> JsonRpcResponse {
+    match name {
+        tools::TOOL_SKILLS => match tools::handle_skills(graph, consent).await {
+            Ok(result) => JsonRpcResponse::ok(
+                id,
+                serde_json::json!({ "content": [{ "type": "text", "text": result.to_string() }] }),
+            ),
+            Err(e) => JsonRpcResponse::error(id, -32000, e.to_string()),
+        },
+        tools::TOOL_CONTEXT => match tools::handle_context(graph, consent).await {
+            Ok(result) => JsonRpcResponse::ok(
+                id,
+                serde_json::json!({ "content": [{ "type": "text", "text": result.to_string() }] }),
+            ),
+            Err(e) => JsonRpcResponse::error(id, -32000, e.to_string()),
+        },
+        tools::TOOL_PREFERENCES => match tools::handle_preferences(graph, consent).await {
+            Ok(result) => JsonRpcResponse::ok(
+                id,
+                serde_json::json!({ "content": [{ "type": "text", "text": result.to_string() }] }),
+            ),
+            Err(e) => JsonRpcResponse::error(id, -32000, e.to_string()),
+        },
+        tools::TOOL_INGEST => match tools::handle_ingest(args, graph, consent).await {
+            Ok(result) => JsonRpcResponse::ok(
+                id,
+                serde_json::json!({ "content": [{ "type": "text", "text": result.to_string() }] }),
+            ),
+            Err(e) => JsonRpcResponse::error(id, -32000, e.to_string()),
+        },
+        _ => JsonRpcResponse::error(id, -32601, format!("Unknown tool: {name}")),
+    }
 }
 
 #[cfg(test)]
@@ -325,45 +365,5 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(r.id, serde_json::json!(99));
-    }
-}
-
-async fn dispatch_tool(
-    name: &str,
-    args: serde_json::Value,
-    id: serde_json::Value,
-    graph: &Arc<GraphHandle>,
-    consent: &Arc<ConsentGate>,
-) -> JsonRpcResponse {
-    match name {
-        tools::TOOL_SKILLS => match tools::handle_skills(graph, consent).await {
-            Ok(result) => JsonRpcResponse::ok(
-                id,
-                serde_json::json!({ "content": [{ "type": "text", "text": result.to_string() }] }),
-            ),
-            Err(e) => JsonRpcResponse::error(id, -32000, e.to_string()),
-        },
-        tools::TOOL_CONTEXT => match tools::handle_context(graph, consent).await {
-            Ok(result) => JsonRpcResponse::ok(
-                id,
-                serde_json::json!({ "content": [{ "type": "text", "text": result.to_string() }] }),
-            ),
-            Err(e) => JsonRpcResponse::error(id, -32000, e.to_string()),
-        },
-        tools::TOOL_PREFERENCES => match tools::handle_preferences(graph, consent).await {
-            Ok(result) => JsonRpcResponse::ok(
-                id,
-                serde_json::json!({ "content": [{ "type": "text", "text": result.to_string() }] }),
-            ),
-            Err(e) => JsonRpcResponse::error(id, -32000, e.to_string()),
-        },
-        tools::TOOL_INGEST => match tools::handle_ingest(args, graph, consent).await {
-            Ok(result) => JsonRpcResponse::ok(
-                id,
-                serde_json::json!({ "content": [{ "type": "text", "text": result.to_string() }] }),
-            ),
-            Err(e) => JsonRpcResponse::error(id, -32000, e.to_string()),
-        },
-        _ => JsonRpcResponse::error(id, -32601, format!("Unknown tool: {name}")),
     }
 }

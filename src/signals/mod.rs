@@ -52,6 +52,45 @@ pub struct IngestPayload {
     pub conversation_id: Option<String>,
 }
 
+/// Maximum tags stored from a single ingest call. Bounds DB growth and the
+/// O(n²) co-occurrence loop against malicious or buggy clients.
+const MAX_TAGS_PER_INGEST: usize = 32;
+/// Maximum AI-provided domain tags considered per call.
+const MAX_DOMAIN_TAGS: usize = 10;
+/// Maximum bytes of raw content processed (in-memory only, but scanning an
+/// unbounded string is a cheap DoS vector).
+const MAX_CONTENT_BYTES: usize = 256 * 1024;
+/// Maximum length of a single client-supplied tag.
+const MAX_TAG_CHARS: usize = 64;
+/// Maximum length of a client-supplied conversation id.
+const MAX_CONVERSATION_ID_CHARS: usize = 64;
+
+/// Validate and normalise a client-supplied tag fragment.
+///
+/// Returns `None` for empty or oversized tags, or tags containing characters
+/// outside `[a-z0-9_+#.-]`. Colons are rejected so clients cannot forge the
+/// reserved namespace prefixes (`wt:`, `dt:`, `tool:`).
+fn sanitize_tag(raw: &str) -> Option<String> {
+    let tag = raw.trim().to_lowercase();
+    if tag.is_empty() || tag.chars().count() > MAX_TAG_CHARS {
+        return None;
+    }
+    let valid = tag
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '+' | '#' | '.'));
+    valid.then_some(tag)
+}
+
+/// Sanitize a conversation id: keep `[A-Za-z0-9_-]`, cap length, drop if empty.
+fn sanitize_conversation_id(raw: &str) -> Option<String> {
+    let id: String = raw
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-'))
+        .take(MAX_CONVERSATION_ID_CHARS)
+        .collect();
+    (!id.is_empty()).then_some(id)
+}
+
 /// Extract skill tags from a `RawSignal` using keyword heuristics.
 ///
 /// The raw signal is consumed — it cannot leak after this call.
@@ -190,14 +229,41 @@ pub fn detect_work_type(signal: &RawSignal) -> WorkType {
 /// When `work_type`, `domain_tags`, or `topic_summary` are pre-classified by the AI tool,
 /// they are used directly. Keyword extraction still runs on non-empty `content` for
 /// technology skill tags (rust, python, etc.), but is skipped when content is empty.
+///
+/// All client-supplied tag inputs are validated (charset, length, count caps);
+/// invalid entries are skipped rather than failing the whole ingest.
 pub fn process_ingest(payload: IngestPayload) -> WorkflowSignal {
-    let raw = RawSignal::new(payload.content.clone());
+    // Bound raw content size before any processing.
+    let mut content = payload.content;
+    if content.len() > MAX_CONTENT_BYTES {
+        let mut end = MAX_CONTENT_BYTES;
+        while !content.is_char_boundary(end) {
+            end -= 1;
+        }
+        content.truncate(end);
+    }
+
+    let raw = RawSignal::new(content.clone());
     let mut tags: Vec<SkillTag> = Vec::new();
+
+    // --- Tool usage tracking ---
+    // Pushed first so the tag cap can never silently drop tool attribution.
+    // Whitespace is normalised to hyphens ("Claude Desktop" → "claude-desktop")
+    // before validation so a space doesn't cost the user attribution.
+    let tool_used =
+        sanitize_tag(&payload.tool_used.replace(char::is_whitespace, "-")).unwrap_or_default();
+    if !tool_used.is_empty() {
+        tags.push(SkillTag::new(format!("tool:{tool_used}")));
+    }
 
     // --- Technology skill tags (keyword extraction) ---
     // Only run if content is non-empty; AI-pre-classified payloads may omit content.
-    if !payload.content.is_empty() {
-        tags.extend(extract_skills(RawSignal::new(payload.content)));
+    if !content.is_empty() {
+        for tag in extract_skills(RawSignal::new(content)) {
+            if !tags.contains(&tag) {
+                tags.push(tag);
+            }
+        }
     }
 
     // --- Work type tag ---
@@ -219,8 +285,11 @@ pub fn process_ingest(payload: IngestPayload) -> WorkflowSignal {
 
     // --- Domain tags (AI-provided, universal vocabulary) ---
     if let Some(ref domain_tags) = payload.domain_tags {
-        for dt in domain_tags {
-            let dt_tag = SkillTag::new(format!("dt:{}", dt.to_lowercase()));
+        for dt in domain_tags.iter().take(MAX_DOMAIN_TAGS) {
+            let Some(clean) = sanitize_tag(dt) else {
+                continue;
+            };
+            let dt_tag = SkillTag::new(format!("dt:{clean}"));
             if !tags.contains(&dt_tag) {
                 tags.push(dt_tag);
             }
@@ -228,20 +297,26 @@ pub fn process_ingest(payload: IngestPayload) -> WorkflowSignal {
     }
 
     // --- Legacy domain hint ---
-    if let Some(ref hint) = payload.domain_hint {
-        let hint_tag = SkillTag::new(hint.to_lowercase());
+    let domain_hint = payload.domain_hint.as_deref().and_then(sanitize_tag);
+    if let Some(ref hint) = domain_hint {
+        let hint_tag = SkillTag::new(hint.clone());
         if !tags.contains(&hint_tag) {
             tags.push(hint_tag);
         }
     }
 
+    tags.truncate(MAX_TAGS_PER_INGEST);
+
     WorkflowSignal {
         timestamp: Utc::now(),
-        tool_used: payload.tool_used,
-        domain_hint: payload.domain_hint,
+        tool_used,
+        domain_hint,
         skill_tags: tags,
         topic_summary: payload.topic_summary,
-        conversation_id: payload.conversation_id,
+        conversation_id: payload
+            .conversation_id
+            .as_deref()
+            .and_then(sanitize_conversation_id),
     }
 }
 
@@ -594,11 +669,142 @@ mod tests {
     fn process_ingest_empty_content_no_preclassification_has_no_wt_tag() {
         let payload = make_payload("", "claude", None);
         let signal = process_ingest(payload);
+        // No wt: tag without preclassification and no detectable keywords
         assert!(!signal
             .skill_tags
             .iter()
             .any(|t| t.as_str().starts_with("wt:")));
-        assert!(signal.skill_tags.is_empty());
+        // tool: tag is expected from tool_used field
+        assert!(signal
+            .skill_tags
+            .iter()
+            .all(|t| t.as_str().starts_with("tool:")));
+    }
+
+    // --- input validation ---
+
+    #[test]
+    fn forged_namespace_prefix_in_domain_tags_is_rejected() {
+        let mut payload = make_payload("", "claude", None);
+        payload.domain_tags = Some(vec![
+            "wt:debugging".into(),
+            "tool:fake".into(),
+            "dt:nested".into(),
+            "legit_domain".into(),
+        ]);
+        let signal = process_ingest(payload);
+        // Colons are invalid in client-supplied tags — only the clean one survives.
+        assert!(signal
+            .skill_tags
+            .contains(&SkillTag::new("dt:legit_domain")));
+        assert!(!signal
+            .skill_tags
+            .iter()
+            .any(|t| t.as_str() == "wt:debugging"));
+        assert!(!signal.skill_tags.iter().any(|t| t.as_str() == "tool:fake"));
+        assert!(!signal
+            .skill_tags
+            .iter()
+            .any(|t| t.as_str().contains("nested")));
+    }
+
+    #[test]
+    fn forged_prefix_in_domain_hint_is_rejected() {
+        let payload = make_payload("", "claude", Some("wt:planning"));
+        let signal = process_ingest(payload);
+        assert!(
+            !signal
+                .skill_tags
+                .iter()
+                .any(|t| t.as_str() == "wt:planning"),
+            "domain_hint must not be able to forge a work-type tag"
+        );
+    }
+
+    #[test]
+    fn domain_tags_capped() {
+        let mut payload = make_payload("", "claude", None);
+        payload.domain_tags = Some((0..100).map(|i| format!("domain_{i}")).collect());
+        let signal = process_ingest(payload);
+        let dt_count = signal
+            .skill_tags
+            .iter()
+            .filter(|t| t.as_str().starts_with("dt:"))
+            .count();
+        assert!(dt_count <= 10, "domain tags must be capped, got {dt_count}");
+    }
+
+    #[test]
+    fn oversized_and_invalid_tags_are_skipped() {
+        let mut payload = make_payload("", "claude", None);
+        payload.domain_tags = Some(vec![
+            "x".repeat(200),
+            "has spaces in it".into(),
+            "<script>".into(),
+            "".into(),
+            "ok-tag".into(),
+        ]);
+        let signal = process_ingest(payload);
+        let dts: Vec<&str> = signal
+            .skill_tags
+            .iter()
+            .filter(|t| t.as_str().starts_with("dt:"))
+            .map(|t| t.as_str())
+            .collect();
+        assert_eq!(dts, vec!["dt:ok-tag"]);
+    }
+
+    #[test]
+    fn tool_used_with_spaces_keeps_attribution() {
+        let payload = make_payload("", "Claude Desktop", None);
+        let signal = process_ingest(payload);
+        assert_eq!(signal.tool_used, "claude-desktop");
+        assert!(signal
+            .skill_tags
+            .contains(&SkillTag::new("tool:claude-desktop")));
+    }
+
+    #[test]
+    fn conversation_id_is_sanitized() {
+        let mut payload = make_payload("", "claude", None);
+        payload.conversation_id = Some("conv:abc/../def 123".into());
+        let signal = process_ingest(payload);
+        let id = signal.conversation_id.unwrap();
+        assert!(
+            id.chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-')),
+            "conversation_id should be stripped to a safe charset: {id}"
+        );
+    }
+
+    #[test]
+    fn oversized_content_is_truncated_not_rejected() {
+        // 300 KB of filler ending with a keyword that lands inside the cap.
+        let mut content = "rust ".to_string();
+        content.push_str(&"y".repeat(300 * 1024));
+        let payload = make_payload(&content, "claude", None);
+        let signal = process_ingest(payload);
+        assert!(signal.skill_tags.contains(&SkillTag::new("rust")));
+    }
+
+    #[test]
+    fn total_tags_capped_per_ingest() {
+        // Max out every tag source at once.
+        let mut payload = make_payload(
+            "rust async sql database python typescript javascript react api testing \
+             refactor debug performance security architecture docker git ci deploy cli error",
+            "claude",
+            Some("extra_hint"),
+        );
+        payload.domain_tags = Some((0..50).map(|i| format!("domain_{i}")).collect());
+        let signal = process_ingest(payload);
+        assert!(
+            signal.skill_tags.len() <= 32,
+            "tag count must be bounded, got {}",
+            signal.skill_tags.len()
+        );
+        // Tool attribution must survive the cap.
+        assert!(signal.skill_tags.contains(&SkillTag::new("tool:claude")));
     }
 
     #[test]

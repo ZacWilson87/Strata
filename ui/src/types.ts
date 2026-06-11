@@ -1,9 +1,12 @@
-export type Tab = "skills" | "consent";
+export type Tab = "skills" | "consent" | "growth";
 
 export interface SkillNode {
   id: string;
   tag: string;
+  /** Lifetime occurrence count — never decreases. */
   strength: number;
+  /** Recency-weighted strength (30-day half-life). Decays when a skill goes unused. */
+  recent_strength?: number;
   last_seen: string;
   session_count: number;
 }
@@ -19,8 +22,29 @@ export interface SkillsResponse {
   skills: SkillNode[];
   work_types: Record<string, number>;
   domains: DomainNode[];
+  tool_usage: Record<string, number>;
 }
 
 export interface PreferencesResponse {
   preferences: Record<string, string>;
+}
+
+export interface AuditEntry {
+  event: string;
+  detail: string | null;
+  occurred_at: string;
+}
+
+export interface AuditLogResponse {
+  entries: AuditEntry[];
+}
+
+export interface WeeklySnapshot {
+  week: string;
+  top_tags: string[];
+  total_sessions: number;
+}
+
+export interface SkillHistoryResponse {
+  weeks: WeeklySnapshot[];
 }

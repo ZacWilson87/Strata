@@ -21,6 +21,7 @@ const MOCK_DATA: SkillsResponse = {
     { tag: "rust", strength: 10, session_count: 10 },
     { tag: "mcp_protocol", strength: 4, session_count: 4 },
   ],
+  tool_usage: { "claude-code": 10, cursor: 4 },
 };
 
 beforeEach(() => {
@@ -85,6 +86,7 @@ describe("SkillMap", () => {
       skills: [],
       work_types: {},
       domains: [],
+      tool_usage: {},
     });
     render(<SkillMap />);
     await waitFor(() => {

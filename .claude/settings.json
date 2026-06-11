@@ -21,31 +21,7 @@
       "Bash(chmod *)"
     ],
     "denyRules": [
-      "Bash(rm -rf /home/user/Strata/src/*)",
       "Bash(sudo rm*)"
-    ]
-  },
-  "hooks": {
-    "PostToolUse": [
-      {
-        "matcher": "Edit|Write",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "/home/user/Strata/.claude/hooks/post-edit.sh"
-          }
-        ]
-      }
-    ]
-  },
-  "mcp": {
-    "servers": [
-      {
-        "name": "sqlite",
-        "type": "local",
-        "command": "uvx",
-        "args": ["mcp-server-sqlite", "--db-path", "/home/user/Strata/data/strata.db"]
-      }
     ]
   }
 }

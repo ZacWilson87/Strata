@@ -28,12 +28,16 @@ pub enum ToolError {
     Json(#[from] serde_json::Error),
 }
 
+/// Server-side cap on topic_summary length. Oversized strings are truncated, not rejected.
+const MAX_TOPIC_SUMMARY_CHARS: usize = 500;
+
 /// Handle `strata/skills` — returns the user's top skill tags as a derived summary.
 ///
-/// Response is categorized into three buckets:
+/// Response is categorized into four buckets:
 /// - `skills`: technology/concept tags (no prefix)
 /// - `work_types`: aggregated counts of `wt:` prefixed tags
 /// - `domains`: `dt:` prefixed domain tags provided by AI tools
+/// - `tool_usage`: aggregated counts of `tool:` prefixed tags (which tools were used)
 pub async fn handle_skills(
     graph: &Arc<GraphHandle>,
     consent: &Arc<ConsentGate>,
@@ -42,10 +46,12 @@ pub async fn handle_skills(
     consent.record(AuditEvent::SkillQueried)?;
     let summary = graph.get_skill_summary()?;
     let all_skills = graph.get_top_skills(100)?;
+    let recent_strengths = graph.get_recent_strengths()?;
 
     let mut skills = Vec::new();
     let mut work_types: std::collections::HashMap<String, f64> = std::collections::HashMap::new();
     let mut domains = Vec::new();
+    let mut tool_usage: std::collections::HashMap<String, f64> = std::collections::HashMap::new();
 
     for node in all_skills {
         if let Some(wt) = node.tag.strip_prefix("wt:") {
@@ -56,8 +62,18 @@ pub async fn handle_skills(
                 "strength": node.strength,
                 "session_count": node.session_count,
             }));
+        } else if let Some(tool) = node.tag.strip_prefix("tool:") {
+            *tool_usage.entry(tool.to_string()).or_insert(0.0) += node.strength;
         } else {
-            skills.push(node);
+            let recent = recent_strengths.get(&node.tag).copied().unwrap_or(0.0);
+            skills.push(serde_json::json!({
+                "id": node.id,
+                "tag": node.tag,
+                "strength": node.strength,
+                "recent_strength": recent,
+                "last_seen": node.last_seen,
+                "session_count": node.session_count,
+            }));
         }
     }
 
@@ -66,6 +82,7 @@ pub async fn handle_skills(
         "skills": skills,
         "work_types": work_types,
         "domains": domains,
+        "tool_usage": tool_usage,
     }))
 }
 
@@ -75,6 +92,7 @@ pub async fn handle_context(
     consent: &Arc<ConsentGate>,
 ) -> Result<serde_json::Value, ToolError> {
     consent.check()?;
+    consent.record(AuditEvent::ContextQueried)?;
     let context = graph.get_context_summary()?;
     Ok(serde_json::json!({
         "context": context.as_str(),
@@ -121,7 +139,13 @@ pub async fn handle_ingest(
 
     // Store topic summary if provided (max 50 retained, keyed by timestamp).
     // Key includes optional conversation_id so work units from the same chat cluster together.
-    if let Some(ref summary) = signal.topic_summary {
+    // Truncate at MAX_TOPIC_SUMMARY_CHARS to enforce a server-side length cap.
+    if let Some(ref raw_summary) = signal.topic_summary {
+        let summary: String = if raw_summary.chars().count() > MAX_TOPIC_SUMMARY_CHARS {
+            raw_summary.chars().take(MAX_TOPIC_SUMMARY_CHARS).collect()
+        } else {
+            raw_summary.clone()
+        };
         let conv_suffix = signal
             .conversation_id
             .as_deref()
@@ -132,11 +156,14 @@ pub async fn handle_ingest(
             signal.timestamp.timestamp_millis(),
             conv_suffix
         );
-        graph.set_preference(&key, summary)?;
+        graph.set_preference(&key, &summary)?;
         evict_old_topic_summaries(graph, 50)?;
     }
 
-    consent.record(AuditEvent::SkillIngested { count: tag_count })?;
+    consent.record(AuditEvent::SkillIngested {
+        count: tag_count,
+        tool: signal.tool_used.clone(),
+    })?;
 
     Ok(serde_json::json!({
         "ingested": tag_count,

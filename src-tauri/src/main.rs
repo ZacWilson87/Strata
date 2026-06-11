@@ -26,12 +26,16 @@ fn main() {
             commands::get_consent_status,
             commands::pause_consent,
             commands::resume_consent,
+            commands::revoke_consent,
+            commands::get_audit_log,
+            commands::get_skill_history,
         ])
         .setup(|app| {
             let data_dir = data_dir(app).unwrap_or_else(|| ".".into());
             std::fs::create_dir_all(&data_dir)
                 .context("failed to create data directory")
                 .map_err(|e| e.to_string())?;
+            restrict_dir_permissions(&data_dir);
             let db_path = format!("{data_dir}/strata.db");
 
             let graph = GraphHandle::open(&db_path)
@@ -55,6 +59,18 @@ fn main() {
         .run(tauri::generate_context!())
         .expect("error while running Tauri application");
 }
+
+/// Restrict the data directory to owner-only access (Unix). Best-effort.
+#[cfg(unix)]
+fn restrict_dir_permissions(dir: &str) {
+    use std::os::unix::fs::PermissionsExt;
+    if let Err(e) = std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700)) {
+        tracing::warn!("could not restrict permissions on {dir}: {e}");
+    }
+}
+
+#[cfg(not(unix))]
+fn restrict_dir_permissions(_dir: &str) {}
 
 fn data_dir(_app: &tauri::App) -> Option<String> {
     // Must match the path used by the MCP server binary (src/main.rs dirs_data_dir()).

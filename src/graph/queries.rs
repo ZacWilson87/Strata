@@ -1,6 +1,6 @@
 /// Typed query interface for the skill graph.
 use chrono::{DateTime, Utc};
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OptionalExtension};
 use std::collections::HashMap;
 use uuid::Uuid;
 
@@ -102,6 +102,9 @@ impl Preferences {
 }
 
 /// Upsert a skill: insert on first occurrence, increment on subsequent ones.
+///
+/// Also appends to the `skill_events` time series (one row per tag per UTC day),
+/// which is the source of truth for history, velocity, and decayed strength.
 pub fn upsert_skill(conn: &Connection, tag: &SkillTag) -> Result<SkillNode, GraphError> {
     let now = Utc::now().to_rfc3339();
     let id = Uuid::new_v4().to_string();
@@ -116,12 +119,37 @@ pub fn upsert_skill(conn: &Connection, tag: &SkillTag) -> Result<SkillNode, Grap
         params![id, tag.as_str(), now],
     )?;
 
+    let day = Utc::now().date_naive().to_string();
+    conn.execute(
+        "INSERT INTO skill_events (tag, day, count) VALUES (?1, ?2, 1)
+         ON CONFLICT(tag, day) DO UPDATE SET count = count + 1",
+        params![tag.as_str(), day],
+    )?;
+
     let node = conn.query_row(
         "SELECT id, tag, strength, last_seen, session_count FROM skills WHERE tag = ?1",
         params![tag.as_str()],
         row_to_skill_node,
     )?;
     Ok(node)
+}
+
+/// Return a skill's node id, creating the node (as a first occurrence) only if
+/// it doesn't exist yet. Unlike `upsert_skill`, an existing node is NOT
+/// incremented — callers that have already counted this occurrence use this to
+/// avoid double-counting strength.
+fn get_or_create_skill_id(conn: &Connection, tag: &SkillTag) -> Result<String, GraphError> {
+    let existing: Option<String> = conn
+        .query_row(
+            "SELECT id FROM skills WHERE tag = ?1",
+            params![tag.as_str()],
+            |r| r.get(0),
+        )
+        .optional()?;
+    match existing {
+        Some(id) => Ok(id),
+        None => upsert_skill(conn, tag).map(|n| n.id),
+    }
 }
 
 /// Record a co-occurrence between two skills. The pair is normalised (lexicographic order).
@@ -137,15 +165,17 @@ pub fn record_co_occurrence(
         (b, a)
     };
 
-    // Fetch IDs (upsert if not present).
-    let from = upsert_skill(conn, from_tag)?;
-    let to = upsert_skill(conn, to_tag)?;
+    // Look up node ids without re-incrementing strength: tags in this signal
+    // were already upserted once by the ingest path, and an ingest with n tags
+    // visits each tag in n-1 pairs.
+    let from_id = get_or_create_skill_id(conn, from_tag)?;
+    let to_id = get_or_create_skill_id(conn, to_tag)?;
 
     conn.execute(
         "INSERT INTO skill_edges (from_id, to_id, co_occurrence)
          VALUES (?1, ?2, 1)
          ON CONFLICT(from_id, to_id) DO UPDATE SET co_occurrence = co_occurrence + 1",
-        params![from.id, to.id],
+        params![from_id, to_id],
     )?;
     Ok(())
 }
@@ -193,56 +223,149 @@ pub fn delete_preference(conn: &Connection, key: &str) -> Result<(), GraphError>
     Ok(())
 }
 
-/// Delete all skill data (called on consent revocation).
-pub fn delete_all_skills(conn: &Connection) -> Result<(), GraphError> {
-    conn.execute_batch("DELETE FROM skill_edges; DELETE FROM skills;")?;
-    Ok(())
-}
-
-/// Write (or replace) today's snapshot for a skill. One row per (tag, day) is kept.
+/// Delete ALL collected data: skills, edges, events, and preferences —
+/// including topic summaries, which are the most sensitive data stored.
+/// Called on consent revocation.
 ///
-/// Uses UTC midnight as the day boundary so all ingests on the same calendar day
-/// update the same snapshot row rather than creating duplicates.
-pub fn upsert_daily_snapshot(
-    conn: &Connection,
-    tag: &SkillTag,
-    session_count: i64,
-    strength: f64,
-) -> Result<(), GraphError> {
-    let day = Utc::now()
-        .date_naive()
-        .format("%Y-%m-%dT00:00:00Z")
-        .to_string();
-    conn.execute(
-        "INSERT OR REPLACE INTO skill_snapshots (skill_tag, snapshot_at, session_count, strength)
-         VALUES (?1, ?2, ?3, ?4)",
-        params![tag.as_str(), day, session_count, strength],
+/// After deleting, truncates the WAL and VACUUMs so the removed rows are not
+/// recoverable from free pages or the write-ahead log. Plain `DELETE` alone
+/// leaves row content in the database file.
+pub fn delete_all_data(conn: &Connection) -> Result<(), GraphError> {
+    conn.execute_batch(
+        "DELETE FROM skill_edges;
+         DELETE FROM skills;
+         DELETE FROM skill_events;
+         DELETE FROM preferences;",
     )?;
+    // Best-effort scrub: checkpoint failure (e.g. another connection holds a
+    // read txn) must not turn a successful delete into an error.
+    let _ = conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);");
+    let _ = conn.execute_batch("VACUUM;");
     Ok(())
 }
 
-/// Compute velocity for the top `limit` skills using a 7-day rolling window.
+/// A single entry from the audit log.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct AuditEntry {
+    pub event: String,
+    pub detail: Option<String>,
+    pub occurred_at: String,
+}
+
+/// Return the most recent `limit` audit log entries, newest first.
+pub fn get_audit_log(conn: &Connection, limit: usize) -> Result<Vec<AuditEntry>, GraphError> {
+    let mut stmt = conn.prepare(
+        "SELECT event, detail, occurred_at
+         FROM audit_log
+         ORDER BY occurred_at DESC
+         LIMIT ?1",
+    )?;
+    let entries = stmt
+        .query_map(params![limit as i64], |row| {
+            Ok(AuditEntry {
+                event: row.get(0)?,
+                detail: row.get(1)?,
+                occurred_at: row.get(2)?,
+            })
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(entries)
+}
+
+/// A snapshot of skill activity for a single ISO week.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct WeeklySnapshot {
+    /// ISO week label, e.g. "2026-W15".
+    pub week: String,
+    /// Top skill tags (no prefix) active during this week, by activity count.
+    pub top_tags: Vec<String>,
+    /// Total skill occurrences recorded during this week.
+    pub total_sessions: i64,
+}
+
+/// Return per-week skill activity for the last `weeks` weeks.
+///
+/// Built from the append-only `skill_events` time series, so a skill appears
+/// in every week it was actually used — using a skill again never erases it
+/// from past weeks. Returns weeks in ascending order so the UI can render a
+/// left-to-right timeline.
+pub fn get_skill_history(
+    conn: &Connection,
+    weeks: usize,
+) -> Result<Vec<WeeklySnapshot>, GraphError> {
+    let cutoff_day = (Utc::now() - chrono::Duration::weeks(weeks as i64))
+        .date_naive()
+        .to_string();
+
+    let mut stmt = conn.prepare(
+        "SELECT tag, day, count
+         FROM skill_events
+         WHERE day >= ?1
+           AND tag NOT LIKE 'wt:%'
+           AND tag NOT LIKE 'dt:%'
+           AND tag NOT LIKE 'tool:%'",
+    )?;
+
+    let rows: Vec<(String, String, i64)> = stmt
+        .query_map(params![cutoff_day], |row| {
+            Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+
+    use std::collections::BTreeMap;
+    let mut by_week: BTreeMap<String, (HashMap<String, i64>, i64)> = BTreeMap::new();
+
+    for (tag, day, count) in rows {
+        let week = iso_week_from_timestamp(&day);
+        let entry = by_week.entry(week).or_default();
+        *entry.0.entry(tag).or_insert(0) += count;
+        entry.1 += count;
+    }
+
+    let snapshots = by_week
+        .into_iter()
+        .map(|(week, (tag_counts, total_sessions))| {
+            let mut tags: Vec<(String, i64)> = tag_counts.into_iter().collect();
+            tags.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+            WeeklySnapshot {
+                week,
+                top_tags: tags.into_iter().take(5).map(|(t, _)| t).collect(),
+                total_sessions,
+            }
+        })
+        .collect();
+
+    Ok(snapshots)
+}
+
+/// Derive an ISO week label ("YYYY-WNN") from an RFC3339 timestamp string.
+fn iso_week_from_timestamp(ts: &str) -> String {
+    use chrono::{Datelike, NaiveDate};
+    let date_part = ts.get(..10).unwrap_or("1970-01-01");
+    if let Ok(d) = date_part.parse::<NaiveDate>() {
+        format!("{}-W{:02}", d.iso_week().year(), d.iso_week().week())
+    } else {
+        "unknown".into()
+    }
+}
+
+/// Compute velocity for the top `limit` skills using a 7-day rolling window
+/// over the `skill_events` time series.
 pub fn get_skill_velocities(
     conn: &Connection,
     limit: usize,
 ) -> Result<Vec<SkillVelocity>, GraphError> {
     let now = Utc::now();
-    let seven_days_ago = (now - chrono::Duration::days(7))
-        .date_naive()
-        .format("%Y-%m-%dT00:00:00Z")
-        .to_string();
-    let fourteen_days_ago = (now - chrono::Duration::days(14))
-        .date_naive()
-        .format("%Y-%m-%dT00:00:00Z")
-        .to_string();
+    let seven_days_ago = (now - chrono::Duration::days(7)).date_naive().to_string();
+    let fourteen_days_ago = (now - chrono::Duration::days(14)).date_naive().to_string();
 
     let mut stmt = conn.prepare(
         "SELECT s.tag,
-            COALESCE(SUM(CASE WHEN sn.snapshot_at >= ?1 THEN sn.session_count ELSE 0 END), 0) AS recent,
-            COALESCE(SUM(CASE WHEN sn.snapshot_at < ?1 AND sn.snapshot_at >= ?2
-                              THEN sn.session_count ELSE 0 END), 0) AS prior
+            COALESCE(SUM(CASE WHEN e.day >= ?1 THEN e.count ELSE 0 END), 0) AS recent,
+            COALESCE(SUM(CASE WHEN e.day < ?1 AND e.day >= ?2
+                              THEN e.count ELSE 0 END), 0) AS prior
          FROM skills s
-         LEFT JOIN skill_snapshots sn ON sn.skill_tag = s.tag
+         LEFT JOIN skill_events e ON e.tag = s.tag
          GROUP BY s.tag
          ORDER BY s.strength DESC
          LIMIT ?3",
@@ -272,6 +395,39 @@ pub fn get_skill_velocities(
         .collect();
 
     Ok(velocities)
+}
+
+/// Half-life (days) for recency-weighted strength.
+const DECAY_HALF_LIFE_DAYS: f64 = 30.0;
+/// Events older than this contribute negligibly and are excluded.
+const DECAY_WINDOW_DAYS: i64 = 90;
+
+/// Recency-weighted strength per tag: each event contributes
+/// `count * 0.5^(age_days / 30)` over a 90-day window.
+///
+/// Unlike lifetime `strength`, this decays when a skill goes unused, so it can
+/// express "what you're improving at" rather than "what you've done most ever".
+pub fn get_recent_strengths(conn: &Connection) -> Result<HashMap<String, f64>, GraphError> {
+    let today = Utc::now().date_naive();
+    let cutoff_day = (today - chrono::Duration::days(DECAY_WINDOW_DAYS)).to_string();
+
+    let mut stmt = conn.prepare("SELECT tag, day, count FROM skill_events WHERE day >= ?1")?;
+    let rows: Vec<(String, String, i64)> = stmt
+        .query_map(params![cutoff_day], |row| {
+            Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+
+    let mut strengths: HashMap<String, f64> = HashMap::new();
+    for (tag, day, count) in rows {
+        let age_days = day
+            .parse::<chrono::NaiveDate>()
+            .map(|d| (today - d).num_days().max(0))
+            .unwrap_or(DECAY_WINDOW_DAYS);
+        let weight = 0.5_f64.powf(age_days as f64 / DECAY_HALF_LIFE_DAYS);
+        *strengths.entry(tag).or_insert(0.0) += count as f64 * weight;
+    }
+    Ok(strengths)
 }
 
 fn compute_direction(recent: i64, prior: i64) -> VelocityDirection {
@@ -474,20 +630,46 @@ mod tests {
     }
 
     #[test]
-    fn delete_all_skills_clears_nodes_and_edges() {
+    fn delete_all_data_clears_nodes_edges_events_and_preferences() {
         let conn = fresh_conn();
         let a = SkillTag::new("rust");
         let b = SkillTag::new("async");
         upsert_skill(&conn, &a).unwrap();
         upsert_skill(&conn, &b).unwrap();
         record_co_occurrence(&conn, &a, &b).unwrap();
-        delete_all_skills(&conn).unwrap();
+        set_preference(&conn, "topic_summary:1000", "sensitive summary").unwrap();
+
+        delete_all_data(&conn).unwrap();
+
         let skills = get_top_skills(&conn, 10).unwrap();
         assert!(skills.is_empty());
-        let edge_count: i64 = conn
-            .query_row("SELECT COUNT(*) FROM skill_edges", [], |r| r.get(0))
-            .unwrap();
-        assert_eq!(edge_count, 0);
+        for table in &["skill_edges", "skill_events", "preferences"] {
+            let count: i64 = conn
+                .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |r| r.get(0))
+                .unwrap();
+            assert_eq!(count, 0, "{table} should be empty after delete_all_data");
+        }
+    }
+
+    #[test]
+    fn record_co_occurrence_does_not_inflate_strength() {
+        let conn = fresh_conn();
+        let a = SkillTag::new("rust");
+        let b = SkillTag::new("async");
+        // Ingest path: each tag upserted exactly once, then edges recorded.
+        upsert_skill(&conn, &a).unwrap();
+        upsert_skill(&conn, &b).unwrap();
+        record_co_occurrence(&conn, &a, &b).unwrap();
+
+        let top = get_top_skills(&conn, 10).unwrap();
+        for node in top {
+            assert_eq!(
+                node.session_count, 1,
+                "edge recording must not re-count '{}'",
+                node.tag
+            );
+            assert!((node.strength - 1.0).abs() < f64::EPSILON);
+        }
     }
 
     #[test]
@@ -513,11 +695,11 @@ mod tests {
     }
 
     #[test]
-    fn delete_all_skills_on_empty_table_is_ok() {
+    fn delete_all_data_on_empty_table_is_ok() {
         let conn = fresh_conn();
         // Calling on an already-empty graph must be idempotent.
-        delete_all_skills(&conn).unwrap();
-        delete_all_skills(&conn).unwrap();
+        delete_all_data(&conn).unwrap();
+        delete_all_data(&conn).unwrap();
     }
 
     #[test]
@@ -547,40 +729,126 @@ mod tests {
         assert!(prefs_after.get("key").is_none());
     }
 
+    /// Insert a raw event row on a backdated day (test helper).
+    fn insert_event(conn: &Connection, tag: &str, days_ago: i64, count: i64) {
+        let day = (Utc::now() - chrono::Duration::days(days_ago))
+            .date_naive()
+            .to_string();
+        conn.execute(
+            "INSERT INTO skill_events (tag, day, count) VALUES (?1, ?2, ?3)
+             ON CONFLICT(tag, day) DO UPDATE SET count = count + excluded.count",
+            params![tag, day, count],
+        )
+        .unwrap();
+    }
+
     #[test]
-    fn snapshot_upserts_for_same_day_are_idempotent() {
+    fn upsert_skill_accumulates_same_day_events() {
         let conn = fresh_conn();
         let tag = SkillTag::new("rust");
-        upsert_daily_snapshot(&conn, &tag, 1, 1.0).unwrap();
-        upsert_daily_snapshot(&conn, &tag, 3, 3.0).unwrap(); // same day — replaces
-        let count: i64 = conn
-            .query_row("SELECT COUNT(*) FROM skill_snapshots", [], |r| r.get(0))
+        upsert_skill(&conn, &tag).unwrap();
+        upsert_skill(&conn, &tag).unwrap();
+        let (rows, count): (i64, i64) = conn
+            .query_row(
+                "SELECT COUNT(*), COALESCE(SUM(count), 0) FROM skill_events WHERE tag = 'rust'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
             .unwrap();
-        assert_eq!(count, 1);
-        let strength: f64 = conn
-            .query_row("SELECT strength FROM skill_snapshots", [], |r| r.get(0))
-            .unwrap();
-        assert!((strength - 3.0).abs() < f64::EPSILON);
+        assert_eq!(rows, 1, "same-day events share one row");
+        assert_eq!(count, 2, "count accumulates per occurrence");
     }
 
     #[test]
     fn velocity_new_when_no_prior_data() {
         let conn = fresh_conn();
-        let tag = SkillTag::new("rust");
-        let node = upsert_skill(&conn, &tag).unwrap();
-        upsert_daily_snapshot(&conn, &tag, node.session_count, node.strength).unwrap();
+        // upsert_skill records today's event automatically.
+        upsert_skill(&conn, &SkillTag::new("rust")).unwrap();
         let velocities = get_skill_velocities(&conn, 10).unwrap();
         assert_eq!(velocities.len(), 1);
         assert_eq!(velocities[0].direction, VelocityDirection::New);
+        assert_eq!(velocities[0].recent_sessions, 1);
     }
 
     #[test]
-    fn velocity_stable_when_no_snapshots_at_all() {
+    fn velocity_stable_when_no_events_in_window() {
         let conn = fresh_conn();
-        upsert_skill(&conn, &SkillTag::new("rust")).unwrap();
-        // No snapshots written — both recent and prior are 0.
+        // Skill row without any events (e.g. activity older than the window).
+        conn.execute(
+            "INSERT INTO skills (id, tag, strength, last_seen, session_count)
+             VALUES ('id-1', 'rust', 5.0, '2020-01-01T00:00:00Z', 5)",
+            [],
+        )
+        .unwrap();
         let velocities = get_skill_velocities(&conn, 10).unwrap();
         assert_eq!(velocities[0].direction, VelocityDirection::Stable);
+    }
+
+    #[test]
+    fn velocity_accelerating_when_recent_exceeds_prior() {
+        let conn = fresh_conn();
+        upsert_skill(&conn, &SkillTag::new("rust")).unwrap(); // 1 event today
+        insert_event(&conn, "rust", 2, 5); // recent window
+        insert_event(&conn, "rust", 10, 2); // prior window
+        let velocities = get_skill_velocities(&conn, 10).unwrap();
+        assert_eq!(velocities[0].direction, VelocityDirection::Accelerating);
+        assert_eq!(velocities[0].recent_sessions, 6);
+    }
+
+    #[test]
+    fn skill_history_keeps_skill_in_past_weeks_after_reuse() {
+        let conn = fresh_conn();
+        // Activity three weeks ago AND today — both weeks must appear.
+        insert_event(&conn, "rust", 21, 3);
+        upsert_skill(&conn, &SkillTag::new("rust")).unwrap();
+
+        let history = get_skill_history(&conn, 8).unwrap();
+        let weeks_with_rust = history
+            .iter()
+            .filter(|w| w.top_tags.contains(&"rust".to_string()))
+            .count();
+        assert!(
+            weeks_with_rust >= 2,
+            "reusing a skill must not erase it from past weeks: {history:?}"
+        );
+        let total: i64 = history.iter().map(|w| w.total_sessions).sum();
+        assert_eq!(total, 4, "total_sessions must sum real occurrence counts");
+    }
+
+    #[test]
+    fn skill_history_excludes_prefixed_tags() {
+        let conn = fresh_conn();
+        upsert_skill(&conn, &SkillTag::new("rust")).unwrap();
+        upsert_skill(&conn, &SkillTag::new("wt:debugging")).unwrap();
+        upsert_skill(&conn, &SkillTag::new("dt:medicine")).unwrap();
+        upsert_skill(&conn, &SkillTag::new("tool:claude")).unwrap();
+
+        let history = get_skill_history(&conn, 8).unwrap();
+        for week in &history {
+            for tag in &week.top_tags {
+                assert!(
+                    !tag.contains(':'),
+                    "prefixed tag '{tag}' leaked into history"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn recent_strengths_decay_older_activity() {
+        let conn = fresh_conn();
+        insert_event(&conn, "old_skill", 60, 10);
+        insert_event(&conn, "new_skill", 0, 10);
+        let strengths = get_recent_strengths(&conn).unwrap();
+        let old = strengths["old_skill"];
+        let new = strengths["new_skill"];
+        assert!(
+            old < new,
+            "equal activity counts must weigh less when older (old={old}, new={new})"
+        );
+        // 60 days at 30-day half-life → 25% weight.
+        assert!((old - 2.5).abs() < 0.01, "expected ~2.5, got {old}");
+        assert!((new - 10.0).abs() < f64::EPSILON);
     }
 
     #[test]
