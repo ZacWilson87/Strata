@@ -15,6 +15,7 @@ async fn main() -> anyhow::Result<()> {
 
     let data_dir = dirs_data_dir().unwrap_or_else(|| ".".into());
     std::fs::create_dir_all(&data_dir).context("failed to create data directory")?;
+    restrict_dir_permissions(&data_dir);
     let db_path = format!("{data_dir}/strata.db");
 
     tracing::info!("opening graph database at {}", db_path);
@@ -33,6 +34,18 @@ async fn main() -> anyhow::Result<()> {
 
     Ok(())
 }
+
+/// Restrict the data directory to owner-only access (Unix). Best-effort.
+#[cfg(unix)]
+fn restrict_dir_permissions(dir: &str) {
+    use std::os::unix::fs::PermissionsExt;
+    if let Err(e) = std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700)) {
+        tracing::warn!("could not restrict permissions on {dir}: {e}");
+    }
+}
+
+#[cfg(not(unix))]
+fn restrict_dir_permissions(_dir: &str) {}
 
 /// Return the platform-appropriate data directory path.
 fn dirs_data_dir() -> Option<String> {

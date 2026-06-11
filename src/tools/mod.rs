@@ -46,6 +46,7 @@ pub async fn handle_skills(
     consent.record(AuditEvent::SkillQueried)?;
     let summary = graph.get_skill_summary()?;
     let all_skills = graph.get_top_skills(100)?;
+    let recent_strengths = graph.get_recent_strengths()?;
 
     let mut skills = Vec::new();
     let mut work_types: std::collections::HashMap<String, f64> = std::collections::HashMap::new();
@@ -64,7 +65,15 @@ pub async fn handle_skills(
         } else if let Some(tool) = node.tag.strip_prefix("tool:") {
             *tool_usage.entry(tool.to_string()).or_insert(0.0) += node.strength;
         } else {
-            skills.push(node);
+            let recent = recent_strengths.get(&node.tag).copied().unwrap_or(0.0);
+            skills.push(serde_json::json!({
+                "id": node.id,
+                "tag": node.tag,
+                "strength": node.strength,
+                "recent_strength": recent,
+                "last_seen": node.last_seen,
+                "session_count": node.session_count,
+            }));
         }
     }
 
@@ -83,6 +92,7 @@ pub async fn handle_context(
     consent: &Arc<ConsentGate>,
 ) -> Result<serde_json::Value, ToolError> {
     consent.check()?;
+    consent.record(AuditEvent::ContextQueried)?;
     let context = graph.get_context_summary()?;
     Ok(serde_json::json!({
         "context": context.as_str(),
@@ -150,7 +160,10 @@ pub async fn handle_ingest(
         evict_old_topic_summaries(graph, 50)?;
     }
 
-    consent.record(AuditEvent::SkillIngested { count: tag_count })?;
+    consent.record(AuditEvent::SkillIngested {
+        count: tag_count,
+        tool: signal.tool_used.clone(),
+    })?;
 
     Ok(serde_json::json!({
         "ingested": tag_count,

@@ -52,8 +52,9 @@ pub enum AuditEvent {
     ConsentPaused,
     ConsentRevoked,
     DataDeleted,
-    SkillIngested { count: usize },
+    SkillIngested { count: usize, tool: String },
     SkillQueried,
+    ContextQueried,
     PreferencesQueried,
 }
 
@@ -66,13 +67,14 @@ impl AuditEvent {
             AuditEvent::DataDeleted => "data_deleted",
             AuditEvent::SkillIngested { .. } => "skill_ingested",
             AuditEvent::SkillQueried => "skill_queried",
+            AuditEvent::ContextQueried => "context_queried",
             AuditEvent::PreferencesQueried => "preferences_queried",
         }
     }
 
     fn detail(&self) -> Option<String> {
         match self {
-            AuditEvent::SkillIngested { count } => Some(format!("count={count}")),
+            AuditEvent::SkillIngested { count, tool } => Some(format!("count={count} tool={tool}")),
             _ => None,
         }
     }
@@ -93,6 +95,11 @@ impl ConsentGate {
     /// a paused or revoked state survives server restarts. Defaults to `Granted`
     /// only on first run (no prior row in `consent_state`).
     pub fn new(conn: Connection) -> Result<Self, ConsentError> {
+        // This connection may be opened outside `graph::schema::migrate`, so it
+        // needs its own contention/scrub pragmas: without a busy_timeout a
+        // consent write can fail with SQLITE_BUSY under cross-process load, and
+        // secure_delete ensures revoked data is scrubbed, not just unlinked.
+        conn.execute_batch("PRAGMA busy_timeout=5000; PRAGMA secure_delete=ON;")?;
         conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS audit_log (
                 id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -141,21 +148,49 @@ impl ConsentGate {
     }
 
     /// Check whether data operations are currently permitted.
+    ///
+    /// Re-reads the persisted status on every call so a pause or revoke made by
+    /// another process (e.g. the desktop dashboard while the MCP server is
+    /// running) takes effect immediately — not at the next server restart.
     pub fn check(&self) -> Result<(), ConsentError> {
-        let status = self.status.lock().map_err(|_| ConsentError::LockPoisoned)?;
-        match *status {
+        match self.refresh_status()? {
             ConsentStatus::Granted => Ok(()),
             ConsentStatus::Paused => Err(ConsentError::Paused),
             ConsentStatus::Revoked => Err(ConsentError::Revoked),
         }
     }
 
-    /// Return the current consent status.
+    /// Return the current consent status, re-read from persistent storage.
     pub fn status(&self) -> Result<ConsentStatus, ConsentError> {
-        self.status
-            .lock()
-            .map(|s| s.clone())
-            .map_err(|_| ConsentError::LockPoisoned)
+        self.refresh_status()
+    }
+
+    /// Read the persisted status from `consent_state` and refresh the cache.
+    ///
+    /// The in-memory copy alone is not authoritative: the MCP server and the
+    /// Tauri app are separate processes sharing one database, and each holds
+    /// its own `ConsentGate`.
+    fn refresh_status(&self) -> Result<ConsentStatus, ConsentError> {
+        let persisted: Option<String> = {
+            let conn = self.conn.lock().map_err(|_| ConsentError::LockPoisoned)?;
+            match conn.query_row("SELECT status FROM consent_state WHERE id = 1", [], |r| {
+                r.get(0)
+            }) {
+                Ok(s) => Some(s),
+                Err(rusqlite::Error::QueryReturnedNoRows) => None,
+                Err(e) => return Err(e.into()),
+            }
+        };
+
+        let status = match persisted.as_deref() {
+            Some("paused") => ConsentStatus::Paused,
+            Some("revoked") => ConsentStatus::Revoked,
+            _ => ConsentStatus::Granted,
+        };
+
+        let mut cached = self.status.lock().map_err(|_| ConsentError::LockPoisoned)?;
+        *cached = status.clone();
+        Ok(status)
     }
 
     /// Pause data collection. Existing data is retained.
@@ -176,7 +211,8 @@ impl ConsentGate {
         self.record(AuditEvent::ConsentGranted)
     }
 
-    /// Revoke consent and delete all collected data from the graph.
+    /// Revoke consent and delete all collected data: skills, edges, events,
+    /// and preferences (including topic summaries).
     pub fn revoke(&self, graph: &GraphHandle) -> Result<(), ConsentError> {
         {
             let mut status = self.status.lock().map_err(|_| ConsentError::LockPoisoned)?;
@@ -184,7 +220,7 @@ impl ConsentGate {
         }
         self.persist_status(&ConsentStatus::Revoked)?;
         self.record(AuditEvent::ConsentRevoked)?;
-        graph.delete_all_skills()?;
+        graph.delete_all_data()?;
         self.record(AuditEvent::DataDeleted)?;
         Ok(())
     }
@@ -346,7 +382,11 @@ mod tests {
         )
         .unwrap();
         let gate = ConsentGate::new(conn).unwrap();
-        gate.record(AuditEvent::SkillIngested { count: 7 }).unwrap();
+        gate.record(AuditEvent::SkillIngested {
+            count: 7,
+            tool: "claude".into(),
+        })
+        .unwrap();
 
         let detail: Option<String> = {
             let db = gate.conn.lock().unwrap();
@@ -357,7 +397,67 @@ mod tests {
             )
             .unwrap()
         };
-        assert_eq!(detail.as_deref(), Some("count=7"));
+        assert_eq!(detail.as_deref(), Some("count=7 tool=claude"));
+    }
+
+    #[test]
+    fn pause_in_one_gate_blocks_another_gate_on_same_db() {
+        // The desktop app and the MCP server each hold their own ConsentGate
+        // over the same database file. A pause in one MUST block the other
+        // without a restart.
+        let path = tempfile::NamedTempFile::new().unwrap().into_temp_path();
+        let path_str = path.to_str().unwrap();
+
+        let dashboard_gate = ConsentGate::new(Connection::open(path_str).unwrap()).unwrap();
+        let server_gate = ConsentGate::new(Connection::open(path_str).unwrap()).unwrap();
+
+        server_gate.check().unwrap();
+        dashboard_gate.pause().unwrap();
+        assert!(
+            matches!(server_gate.check(), Err(ConsentError::Paused)),
+            "pause from another gate must block immediately"
+        );
+
+        dashboard_gate.resume().unwrap();
+        server_gate.check().unwrap();
+    }
+
+    #[test]
+    fn revoke_in_one_gate_blocks_another_gate_on_same_db() {
+        let path = tempfile::NamedTempFile::new().unwrap().into_temp_path();
+        let path_str = path.to_str().unwrap();
+
+        let graph = GraphHandle::open(path_str).unwrap();
+        let dashboard_gate = ConsentGate::new(Connection::open(path_str).unwrap()).unwrap();
+        let server_gate = ConsentGate::new(Connection::open(path_str).unwrap()).unwrap();
+
+        server_gate.check().unwrap();
+        dashboard_gate.revoke(&graph).unwrap();
+        assert!(matches!(server_gate.check(), Err(ConsentError::Revoked)));
+    }
+
+    #[test]
+    fn revoke_deletes_preferences_and_topic_summaries() {
+        let path = tempfile::NamedTempFile::new().unwrap().into_temp_path();
+        let path_str = path.to_str().unwrap();
+
+        let graph = GraphHandle::open(path_str).unwrap();
+        let gate = ConsentGate::new(Connection::open(path_str).unwrap()).unwrap();
+
+        graph
+            .upsert_skill(&crate::private_mode::SkillTag::new("rust"))
+            .unwrap();
+        graph
+            .set_preference("topic_summary:1000", "private work description")
+            .unwrap();
+
+        gate.revoke(&graph).unwrap();
+
+        assert!(graph.get_top_skills(10).unwrap().is_empty());
+        assert!(
+            graph.get_preferences().unwrap().0.is_empty(),
+            "preferences (incl. topic summaries) must be wiped on revoke"
+        );
     }
 
     #[test]

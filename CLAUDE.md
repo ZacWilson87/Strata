@@ -20,7 +20,7 @@ Strata runs locally on the user's machine as an MCP server, extracting useful pa
 |---|---|
 | Core server | Rust (stable toolchain) |
 | Desktop shell | Tauri v2 |
-| Skill graph storage | SQLite (local, encrypted at rest) |
+| Skill graph storage | SQLite (local; owner-only file permissions — at-rest encryption planned, see PRIVACY.md) |
 | Dashboard frontend | React + TypeScript (via Tauri webview) |
 | MCP protocol | Custom Rust implementation |
 

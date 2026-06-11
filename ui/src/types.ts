@@ -3,7 +3,10 @@ export type Tab = "skills" | "consent" | "growth";
 export interface SkillNode {
   id: string;
   tag: string;
+  /** Lifetime occurrence count — never decreases. */
   strength: number;
+  /** Recency-weighted strength (30-day half-life). Decays when a skill goes unused. */
+  recent_strength?: number;
   last_seen: string;
   session_count: number;
 }

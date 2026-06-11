@@ -426,7 +426,7 @@ async fn audit_log_reflects_ingestion() {
 
 #[tokio::test]
 async fn skill_history_returns_recent_snapshots() {
-    let (graph, consent) = make_handles();
+    let (graph, _consent) = make_handles();
     // Upsert some skills so there's data in the last 8 weeks.
     graph.upsert_skill(&SkillTag::new("rust")).unwrap();
     graph.upsert_skill(&SkillTag::new("async")).unwrap();
@@ -442,6 +442,138 @@ async fn skill_history_returns_recent_snapshots() {
             .iter()
             .any(|s| s.top_tags.contains(&"rust".to_string())),
         "rust should appear in skill history"
+    );
+}
+
+// ── privacy invariants (Phase 0 hardening) ───────────────────────────────────
+
+/// Invariant: a pause made by one process (dashboard) must immediately block
+/// ingestion in another process (MCP server) sharing the same database.
+#[tokio::test]
+async fn pause_from_dashboard_blocks_running_mcp_server() {
+    let tmp = tempfile::NamedTempFile::new().unwrap().into_temp_path();
+    let path = tmp.to_str().unwrap();
+
+    let graph = Arc::new(GraphHandle::open(path).unwrap());
+    let server_gate =
+        Arc::new(ConsentGate::new(rusqlite::Connection::open(path).unwrap()).unwrap());
+    let dashboard_gate = ConsentGate::new(rusqlite::Connection::open(path).unwrap()).unwrap();
+
+    let params = serde_json::json!({"tool_used": "claude", "content": "rust code"});
+    tools::handle_ingest(params.clone(), &graph, &server_gate)
+        .await
+        .unwrap();
+
+    // Dashboard pauses — the "server" gate must block WITHOUT a restart.
+    dashboard_gate.pause().unwrap();
+    assert!(
+        tools::handle_ingest(params, &graph, &server_gate)
+            .await
+            .is_err(),
+        "pause from another process must block ingestion immediately"
+    );
+}
+
+/// Invariant: revocation deletes ALL collected data, including topic summaries
+/// (stored in preferences) — the most sensitive data Strata holds.
+#[tokio::test]
+async fn revoke_wipes_topic_summaries_and_all_data() {
+    let tmp = tempfile::NamedTempFile::new().unwrap().into_temp_path();
+    let path = tmp.to_str().unwrap();
+    let graph = Arc::new(GraphHandle::open(path).unwrap());
+    let consent = Arc::new(ConsentGate::new(rusqlite::Connection::open(path).unwrap()).unwrap());
+
+    let params = serde_json::json!({
+        "tool_used": "claude",
+        "content": "rust async",
+        "work_type": "creation",
+        "domain_tags": ["systems_programming"],
+        "topic_summary": "SENSITIVE_WORK_DESCRIPTION building auth flow",
+    });
+    tools::handle_ingest(params, &graph, &consent)
+        .await
+        .unwrap();
+
+    consent.revoke(&graph).unwrap();
+
+    assert!(graph.get_top_skills(100).unwrap().is_empty());
+    assert!(
+        graph.get_preferences().unwrap().0.is_empty(),
+        "topic summaries must not survive revocation"
+    );
+    assert!(graph.get_skill_history(8).unwrap().is_empty());
+}
+
+/// Invariant: one ingest counts each skill exactly once, regardless of how
+/// many other tags it co-occurs with.
+#[tokio::test]
+async fn single_ingest_counts_each_skill_once() {
+    let (graph, consent) = make_handles();
+    let params = serde_json::json!({
+        "tool_used": "claude",
+        "content": "rust async sql database python testing",
+    });
+    tools::handle_ingest(params, &graph, &consent)
+        .await
+        .unwrap();
+
+    for node in graph.get_top_skills(100).unwrap() {
+        assert_eq!(
+            node.session_count, 1,
+            "'{}' was counted {} times in a single ingest",
+            node.tag, node.session_count
+        );
+    }
+}
+
+/// Invariant: clients cannot forge reserved namespace prefixes through any
+/// user-supplied field.
+#[tokio::test]
+async fn forged_prefixes_rejected_end_to_end() {
+    let (graph, consent) = make_handles();
+    let params = serde_json::json!({
+        "tool_used": "claude",
+        "content": "",
+        "domain_hint": "wt:debugging",
+        "domain_tags": ["tool:fake", "wt:research"],
+    });
+    tools::handle_ingest(params, &graph, &consent)
+        .await
+        .unwrap();
+
+    let result = tools::handle_skills(&graph, &consent).await.unwrap();
+    let work_types = result["work_types"].as_object().unwrap();
+    assert!(
+        work_types.is_empty(),
+        "forged work types leaked: {work_types:?}"
+    );
+    let tool_usage = result["tool_usage"].as_object().unwrap();
+    assert!(
+        !tool_usage.contains_key("fake"),
+        "forged tool tag leaked: {tool_usage:?}"
+    );
+}
+
+/// Skills response includes a recency-weighted strength alongside lifetime strength.
+#[tokio::test]
+async fn skills_response_includes_recent_strength() {
+    let (graph, consent) = make_handles();
+    let params = serde_json::json!({"tool_used": "claude", "content": "rust code"});
+    tools::handle_ingest(params, &graph, &consent)
+        .await
+        .unwrap();
+
+    let result = tools::handle_skills(&graph, &consent).await.unwrap();
+    let rust = result["skills"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|s| s["tag"] == "rust")
+        .expect("rust skill present");
+    let recent = rust["recent_strength"].as_f64().unwrap();
+    assert!(
+        recent > 0.9,
+        "today's activity should have ~full weight: {recent}"
     );
 }
 

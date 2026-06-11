@@ -25,9 +25,13 @@ pub struct GraphHandle {
 
 impl GraphHandle {
     /// Open (or create) the SQLite database at the given path and apply migrations.
+    ///
+    /// On Unix the database files are restricted to owner-only (0600): the graph
+    /// holds derived-but-personal data and must not be readable by other users.
     pub fn open(path: &str) -> Result<Self, GraphError> {
         let conn = Connection::open(path)?;
         schema::migrate(&conn)?;
+        restrict_db_permissions(path);
         Ok(Self {
             conn: Arc::new(Mutex::new(conn)),
         })
@@ -135,21 +139,20 @@ impl GraphHandle {
         queries::get_skill_history(&conn, weeks)
     }
 
-    /// Delete all skill data (called on consent revocation).
-    pub fn delete_all_skills(&self) -> Result<(), GraphError> {
+    /// Delete ALL collected data — skills, edges, events, and preferences
+    /// (including topic summaries). Called on consent revocation.
+    pub fn delete_all_data(&self) -> Result<(), GraphError> {
         let conn = self.conn.lock().map_err(|_| GraphError::LockPoisoned)?;
-        queries::delete_all_skills(&conn)
+        queries::delete_all_data(&conn)
     }
 
-    /// Write (or replace) today's snapshot for a skill.
-    pub fn upsert_daily_snapshot(
+    /// Return recency-weighted strength per tag (30-day half-life decay).
+    pub fn get_recent_strengths(
         &self,
-        tag: &SkillTag,
-        session_count: i64,
-        strength: f64,
-    ) -> Result<(), GraphError> {
+    ) -> Result<std::collections::HashMap<String, f64>, GraphError> {
         let conn = self.conn.lock().map_err(|_| GraphError::LockPoisoned)?;
-        queries::upsert_daily_snapshot(&conn, tag, session_count, strength)
+        let _ = conn.execute_batch("PRAGMA wal_checkpoint(PASSIVE);");
+        queries::get_recent_strengths(&conn)
     }
 
     /// Return velocity data for the top `limit` skills.
@@ -174,6 +177,31 @@ impl GraphHandle {
         let conn = self.conn.lock().map_err(|_| GraphError::LockPoisoned)?;
         queries::get_topic_summaries(&conn)
     }
+}
+
+/// Restrict the database file (and its WAL/SHM siblings) to owner-only access.
+/// Best-effort: a permissions failure must not prevent the app from starting.
+#[cfg(unix)]
+fn restrict_db_permissions(path: &str) {
+    use std::os::unix::fs::PermissionsExt;
+    for candidate in [
+        path.to_string(),
+        format!("{path}-wal"),
+        format!("{path}-shm"),
+    ] {
+        if let Ok(metadata) = std::fs::metadata(&candidate) {
+            let mut perms = metadata.permissions();
+            perms.set_mode(0o600);
+            if let Err(e) = std::fs::set_permissions(&candidate, perms) {
+                tracing::warn!("could not restrict permissions on {candidate}: {e}");
+            }
+        }
+    }
+}
+
+#[cfg(not(unix))]
+fn restrict_db_permissions(_path: &str) {
+    // Windows: %APPDATA% is already per-user; ACL hardening tracked separately.
 }
 
 #[cfg(test)]
@@ -227,12 +255,13 @@ mod tests {
     }
 
     #[test]
-    fn delete_all_skills_clears_graph() {
+    fn delete_all_data_clears_graph() {
         let graph = GraphHandle::open_in_memory().unwrap();
         graph.upsert_skill(&SkillTag::new("rust")).unwrap();
-        graph.delete_all_skills().unwrap();
-        let top = graph.get_top_skills(10).unwrap();
-        assert!(top.is_empty());
+        graph.set_preference("topic_summary:1", "secret").unwrap();
+        graph.delete_all_data().unwrap();
+        assert!(graph.get_top_skills(10).unwrap().is_empty());
+        assert!(graph.get_preferences().unwrap().0.is_empty());
     }
 
     #[test]
