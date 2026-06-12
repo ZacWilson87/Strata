@@ -35,12 +35,9 @@ fn main() {
             commands::dismiss_insight,
         ])
         .setup(|app| {
-            let data_dir = data_dir(app).unwrap_or_else(|| ".".into());
-            std::fs::create_dir_all(&data_dir)
-                .context("failed to create data directory")
+            let db_path = strata::paths::prepare_db_path()
+                .context("failed to prepare data directory")
                 .map_err(|e| e.to_string())?;
-            restrict_dir_permissions(&data_dir);
-            let db_path = format!("{data_dir}/strata.db");
 
             let graph = GraphHandle::open(&db_path)
                 .context("failed to open skill graph database")
@@ -62,33 +59,4 @@ fn main() {
         })
         .run(tauri::generate_context!())
         .expect("error while running Tauri application");
-}
-
-/// Restrict the data directory to owner-only access (Unix). Best-effort.
-#[cfg(unix)]
-fn restrict_dir_permissions(dir: &str) {
-    use std::os::unix::fs::PermissionsExt;
-    if let Err(e) = std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700)) {
-        tracing::warn!("could not restrict permissions on {dir}: {e}");
-    }
-}
-
-#[cfg(not(unix))]
-fn restrict_dir_permissions(_dir: &str) {}
-
-fn data_dir(_app: &tauri::App) -> Option<String> {
-    // Must match the path used by the MCP server binary (src/main.rs dirs_data_dir()).
-    // Both processes share the same SQLite file — diverging paths produce split databases.
-    #[cfg(target_os = "macos")]
-    {
-        dirs::home_dir().map(|h| format!("{}/Library/Application Support/Strata", h.display()))
-    }
-    #[cfg(target_os = "linux")]
-    {
-        dirs::data_local_dir().map(|d| format!("{}/strata", d.display()))
-    }
-    #[cfg(target_os = "windows")]
-    {
-        dirs::data_dir().map(|d| format!("{}\\Strata", d.display()))
-    }
 }

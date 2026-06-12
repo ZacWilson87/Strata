@@ -172,6 +172,7 @@ so deleted rows are not recoverable from the file.
 src/
 ├── lib.rs            Public API surface (re-exports all modules)
 ├── main.rs           Binary entry point — opens DB, starts MCP server
+├── paths.rs          Data-dir/db-path resolution shared by both binaries
 ├── private_mode.rs   Privacy newtypes: RawSignal, DerivedSummary, SkillTag, WorkType
 ├── signals/          In-memory signal processing + skill/work-type/domain extraction
 ├── graph/            SQLite skill graph (schema, queries, GraphHandle)

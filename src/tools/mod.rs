@@ -4,7 +4,7 @@
 use std::sync::Arc;
 
 use crate::consent::{AuditEvent, ConsentError, ConsentGate};
-use crate::graph::GraphHandle;
+use crate::graph::{topic_summary_key, GraphHandle, TOPIC_SUMMARY_PREFIX};
 use crate::signals::{process_ingest, IngestPayload};
 
 pub const TOOL_SKILLS: &str = "strata_skills";
@@ -130,7 +130,7 @@ pub async fn handle_ingest(
     }
 
     // Record co-occurrences for pairs of tags in this signal.
-    let tags: Vec<_> = signal.skill_tags.clone();
+    let tags = &signal.skill_tags;
     for i in 0..tags.len() {
         for j in (i + 1)..tags.len() {
             graph.record_co_occurrence(&tags[i], &tags[j])?;
@@ -146,15 +146,9 @@ pub async fn handle_ingest(
         } else {
             raw_summary.clone()
         };
-        let conv_suffix = signal
-            .conversation_id
-            .as_deref()
-            .map(|id| format!(":{}", id))
-            .unwrap_or_default();
-        let key = format!(
-            "topic_summary:{}{}",
+        let key = topic_summary_key(
             signal.timestamp.timestamp_millis(),
-            conv_suffix
+            signal.conversation_id.as_deref(),
         );
         graph.set_preference(&key, &summary)?;
         evict_old_topic_summaries(graph, 50)?;
@@ -198,15 +192,13 @@ pub async fn handle_ingest(
 
 /// Evict oldest topic summary preferences beyond `max_count`.
 fn evict_old_topic_summaries(
-    graph: &Arc<GraphHandle>,
+    graph: &GraphHandle,
     max_count: usize,
 ) -> Result<(), crate::graph::queries::GraphError> {
-    let prefs = graph.get_preferences()?;
-    let mut summary_keys: Vec<String> = prefs
-        .0
-        .keys()
-        .filter(|k| k.starts_with("topic_summary:"))
-        .cloned()
+    let mut summary_keys: Vec<String> = graph
+        .get_preferences_with_prefix(TOPIC_SUMMARY_PREFIX)?
+        .into_iter()
+        .map(|(key, _)| key)
         .collect();
 
     if summary_keys.len() > max_count {

@@ -3,14 +3,22 @@ use rusqlite::Connection;
 
 use super::queries::GraphError;
 
+/// Connection-level pragmas every connection to the Strata database needs,
+/// including ones opened outside `migrate` (e.g. the consent gate's): a busy
+/// timeout so cross-process writes don't fail with SQLITE_BUSY, and
+/// secure_delete so deleted rows are scrubbed rather than just unlinked.
+pub fn apply_connection_pragmas(conn: &Connection) -> Result<(), GraphError> {
+    conn.execute_batch("PRAGMA busy_timeout=5000; PRAGMA secure_delete=ON;")?;
+    Ok(())
+}
+
 /// Apply all schema migrations in order. Safe to run on an existing database.
 pub fn migrate(conn: &Connection) -> Result<(), GraphError> {
+    apply_connection_pragmas(conn)?;
     conn.execute_batch(
         "
         PRAGMA journal_mode=WAL;
         PRAGMA foreign_keys=ON;
-        PRAGMA busy_timeout=5000;
-        PRAGMA secure_delete=ON;
 
         CREATE TABLE IF NOT EXISTS skills (
             id           TEXT PRIMARY KEY,

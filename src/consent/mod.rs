@@ -96,10 +96,8 @@ impl ConsentGate {
     /// only on first run (no prior row in `consent_state`).
     pub fn new(conn: Connection) -> Result<Self, ConsentError> {
         // This connection may be opened outside `graph::schema::migrate`, so it
-        // needs its own contention/scrub pragmas: without a busy_timeout a
-        // consent write can fail with SQLITE_BUSY under cross-process load, and
-        // secure_delete ensures revoked data is scrubbed, not just unlinked.
-        conn.execute_batch("PRAGMA busy_timeout=5000; PRAGMA secure_delete=ON;")?;
+        // needs the contention/scrub pragmas applied here.
+        crate::graph::schema::apply_connection_pragmas(&conn)?;
         conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS audit_log (
                 id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -121,12 +119,8 @@ impl ConsentGate {
             })
             .ok();
 
-        let (initial_status, is_first_run) = match persisted.as_deref() {
-            Some("paused") => (ConsentStatus::Paused, false),
-            Some("revoked") => (ConsentStatus::Revoked, false),
-            Some(_) => (ConsentStatus::Granted, false),
-            None => (ConsentStatus::Granted, true),
-        };
+        let is_first_run = persisted.is_none();
+        let initial_status = parse_status(persisted.as_deref());
 
         let gate = Self {
             status: Arc::new(Mutex::new(initial_status)),
@@ -134,7 +128,7 @@ impl ConsentGate {
         };
 
         if is_first_run {
-            gate.persist_status(&ConsentStatus::Granted)?;
+            gate.set_status(ConsentStatus::Granted)?;
             gate.record(AuditEvent::ConsentGranted)?;
         }
 
@@ -172,7 +166,7 @@ impl ConsentGate {
     /// its own `ConsentGate`.
     fn refresh_status(&self) -> Result<ConsentStatus, ConsentError> {
         let persisted: Option<String> = {
-            let conn = self.conn.lock().map_err(|_| ConsentError::LockPoisoned)?;
+            let conn = self.conn()?;
             match conn.query_row("SELECT status FROM consent_state WHERE id = 1", [], |r| {
                 r.get(0)
             }) {
@@ -182,12 +176,7 @@ impl ConsentGate {
             }
         };
 
-        let status = match persisted.as_deref() {
-            Some("paused") => ConsentStatus::Paused,
-            Some("revoked") => ConsentStatus::Revoked,
-            _ => ConsentStatus::Granted,
-        };
-
+        let status = parse_status(persisted.as_deref());
         let mut cached = self.status.lock().map_err(|_| ConsentError::LockPoisoned)?;
         *cached = status.clone();
         Ok(status)
@@ -195,30 +184,20 @@ impl ConsentGate {
 
     /// Pause data collection. Existing data is retained.
     pub fn pause(&self) -> Result<(), ConsentError> {
-        let mut status = self.status.lock().map_err(|_| ConsentError::LockPoisoned)?;
-        *status = ConsentStatus::Paused;
-        drop(status);
-        self.persist_status(&ConsentStatus::Paused)?;
+        self.set_status(ConsentStatus::Paused)?;
         self.record(AuditEvent::ConsentPaused)
     }
 
     /// Resume data collection after a pause.
     pub fn resume(&self) -> Result<(), ConsentError> {
-        let mut status = self.status.lock().map_err(|_| ConsentError::LockPoisoned)?;
-        *status = ConsentStatus::Granted;
-        drop(status);
-        self.persist_status(&ConsentStatus::Granted)?;
+        self.set_status(ConsentStatus::Granted)?;
         self.record(AuditEvent::ConsentGranted)
     }
 
     /// Revoke consent and delete all collected data: skills, edges, events,
     /// and preferences (including topic summaries).
     pub fn revoke(&self, graph: &GraphHandle) -> Result<(), ConsentError> {
-        {
-            let mut status = self.status.lock().map_err(|_| ConsentError::LockPoisoned)?;
-            *status = ConsentStatus::Revoked;
-        }
-        self.persist_status(&ConsentStatus::Revoked)?;
+        self.set_status(ConsentStatus::Revoked)?;
         self.record(AuditEvent::ConsentRevoked)?;
         graph.delete_all_data()?;
         self.record(AuditEvent::DataDeleted)?;
@@ -227,24 +206,38 @@ impl ConsentGate {
 
     /// Record an audit event with a timestamp.
     pub fn record(&self, event: AuditEvent) -> Result<(), ConsentError> {
-        let conn = self.conn.lock().map_err(|_| ConsentError::LockPoisoned)?;
         let now = Utc::now().to_rfc3339();
-        conn.execute(
+        self.conn()?.execute(
             "INSERT INTO audit_log (event, detail, occurred_at) VALUES (?1, ?2, ?3)",
             params![event.as_str(), event.detail(), now],
         )?;
         Ok(())
     }
 
-    /// Persist the current consent status to the `consent_state` table.
-    fn persist_status(&self, status: &ConsentStatus) -> Result<(), ConsentError> {
-        let conn = self.conn.lock().map_err(|_| ConsentError::LockPoisoned)?;
+    /// Lock the shared connection.
+    fn conn(&self) -> Result<std::sync::MutexGuard<'_, Connection>, ConsentError> {
+        self.conn.lock().map_err(|_| ConsentError::LockPoisoned)
+    }
+
+    /// Update the cached status and persist it to the `consent_state` table.
+    fn set_status(&self, status: ConsentStatus) -> Result<(), ConsentError> {
+        *self.status.lock().map_err(|_| ConsentError::LockPoisoned)? = status.clone();
         let now = Utc::now().to_rfc3339();
-        conn.execute(
+        self.conn()?.execute(
             "INSERT OR REPLACE INTO consent_state (id, status, updated_at) VALUES (1, ?1, ?2)",
             params![status.to_string(), now],
         )?;
         Ok(())
+    }
+}
+
+/// Map a persisted status string to a `ConsentStatus`. Missing or unknown
+/// values fall back to `Granted`, matching the schema default.
+fn parse_status(persisted: Option<&str>) -> ConsentStatus {
+    match persisted {
+        Some("paused") => ConsentStatus::Paused,
+        Some("revoked") => ConsentStatus::Revoked,
+        _ => ConsentStatus::Granted,
     }
 }
 

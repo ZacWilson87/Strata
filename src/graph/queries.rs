@@ -95,6 +95,19 @@ pub struct TopicSummaryEntry {
     pub conversation_id: Option<String>,
 }
 
+/// Preference-key namespace for stored topic summaries.
+pub const TOPIC_SUMMARY_PREFIX: &str = "topic_summary:";
+
+/// Build the preference key for a topic summary:
+/// `topic_summary:<timestamp_ms>` or `topic_summary:<timestamp_ms>:<conversation_id>`.
+/// [`get_topic_summaries`] parses this format back.
+pub fn topic_summary_key(timestamp_ms: i64, conversation_id: Option<&str>) -> String {
+    match conversation_id {
+        Some(id) => format!("{TOPIC_SUMMARY_PREFIX}{timestamp_ms}:{id}"),
+        None => format!("{TOPIC_SUMMARY_PREFIX}{timestamp_ms}"),
+    }
+}
+
 impl Preferences {
     pub fn get(&self, key: &str) -> Option<&str> {
         self.0.get(key).map(String::as_str)
@@ -221,6 +234,22 @@ pub fn set_preference(conn: &Connection, key: &str, value: &str) -> Result<(), G
 pub fn delete_preference(conn: &Connection, key: &str) -> Result<(), GraphError> {
     conn.execute("DELETE FROM preferences WHERE key = ?1", params![key])?;
     Ok(())
+}
+
+/// Return (key, value) pairs for preferences whose key starts with `prefix`.
+///
+/// Uses `substr` rather than `LIKE` so prefix characters such as `_` are
+/// matched literally, not as wildcards.
+pub fn get_preferences_with_prefix(
+    conn: &Connection,
+    prefix: &str,
+) -> Result<Vec<(String, String)>, GraphError> {
+    let mut stmt =
+        conn.prepare("SELECT key, value FROM preferences WHERE substr(key, 1, length(?1)) = ?1")?;
+    let pairs = stmt
+        .query_map(params![prefix], |row| Ok((row.get(0)?, row.get(1)?)))?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(pairs)
 }
 
 /// Delete ALL collected data: skills, edges, events, and preferences —
@@ -514,25 +543,20 @@ pub fn get_skills_with_velocity(
 /// Parses keys of the form `topic_summary:<timestamp_ms>` or
 /// `topic_summary:<timestamp_ms>:<conversation_id>`.
 pub fn get_topic_summaries(conn: &Connection) -> Result<Vec<TopicSummaryEntry>, GraphError> {
-    let prefs = get_preferences(conn)?;
-
-    let mut entries: Vec<TopicSummaryEntry> = prefs
-        .0
-        .iter()
-        .filter(|(k, _)| k.starts_with("topic_summary:"))
-        .filter_map(|(k, v)| {
-            let rest = k.strip_prefix("topic_summary:")?;
-            let mut parts = rest.splitn(2, ':');
-            let ts_str = parts.next()?;
-            let timestamp_ms = ts_str.parse::<i64>().ok()?;
-            let conversation_id = parts.next().map(|s| s.to_string());
-            Some(TopicSummaryEntry {
-                timestamp_ms,
-                summary: v.clone(),
-                conversation_id,
+    let mut entries: Vec<TopicSummaryEntry> =
+        get_preferences_with_prefix(conn, TOPIC_SUMMARY_PREFIX)?
+            .into_iter()
+            .filter_map(|(k, v)| {
+                let rest = k.strip_prefix(TOPIC_SUMMARY_PREFIX)?;
+                let mut parts = rest.splitn(2, ':');
+                let timestamp_ms = parts.next()?.parse::<i64>().ok()?;
+                Some(TopicSummaryEntry {
+                    timestamp_ms,
+                    summary: v,
+                    conversation_id: parts.next().map(str::to_string),
+                })
             })
-        })
-        .collect();
+            .collect();
 
     entries.sort_by(|a, b| b.timestamp_ms.cmp(&a.timestamp_ms));
     Ok(entries)

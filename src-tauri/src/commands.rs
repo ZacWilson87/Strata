@@ -111,14 +111,7 @@ pub async fn get_insights(state: tauri::State<'_, AppState>) -> Result<serde_jso
 
 #[tauri::command]
 pub async fn dismiss_insight(id: String, state: tauri::State<'_, AppState>) -> Result<(), String> {
-    let valid = !id.is_empty()
-        && id.len() <= 128
-        && id
-            .chars()
-            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '_' | ':' | '-'));
-    if !valid {
-        return Err("invalid insight id".to_string());
-    }
+    // Id validation is enforced once, in the graph layer (`GraphHandle::dismiss_insight`).
     state.graph.dismiss_insight(&id).map_err(|e| e.to_string())
 }
 
