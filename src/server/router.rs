@@ -116,13 +116,25 @@ pub async fn dispatch(
                     },
                     {
                         "name": tools::TOOL_CONTEXT,
-                        "description": "Returns current session personalization context based on recent skill activity.",
+                        "description": "Returns a session-start briefing about this user: recency-weighted top skills, active domains, 30-day work mix, recent topics, stored preferences, and workflow watch-outs. Call once at the start of a session and apply the preferences it returns.",
                         "inputSchema": { "type": "object", "properties": {} }
                     },
                     {
                         "name": tools::TOOL_PREFERENCES,
-                        "description": "Returns stored workflow preferences.",
+                        "description": "Returns the user's stored workflow preferences (key → value). These were stated by the user in past sessions of this or other AI tools — follow them.",
                         "inputSchema": { "type": "object", "properties": {} }
+                    },
+                    {
+                        "name": tools::TOOL_SET_PREFERENCE,
+                        "description": "Store a durable user workflow preference so every connected AI tool respects it in future sessions. Call when the user states a lasting way they want you to work (e.g. 'stop using emojis in commit messages' → key 'commit_emoji', value 'never use emojis in commit messages'). Do NOT store one-off instructions, secrets, or personal data. Set value to an empty string to clear a preference.",
+                        "inputSchema": {
+                            "type": "object",
+                            "properties": {
+                                "key": { "type": "string", "description": "Short stable identifier: lowercase letters, digits, '_', '-', '.' (max 64 chars). Reuse the same key to update." },
+                                "value": { "type": "string", "maxLength": 500, "description": "The preference, phrased as an instruction any AI tool can follow. Empty string clears the key." }
+                            },
+                            "required": ["key", "value"]
+                        }
                     },
                     {
                         "name": tools::TOOL_INGEST,
@@ -165,7 +177,11 @@ pub async fn dispatch(
         }
         // Legacy direct-method calls (kept for backwards compat with manual
         // testing) — return the raw result without the MCP envelope.
-        tools::TOOL_SKILLS | tools::TOOL_CONTEXT | tools::TOOL_PREFERENCES | tools::TOOL_INGEST => {
+        tools::TOOL_SKILLS
+        | tools::TOOL_CONTEXT
+        | tools::TOOL_PREFERENCES
+        | tools::TOOL_INGEST
+        | tools::TOOL_SET_PREFERENCE => {
             match call_tool(&req.method, params, graph, consent).await {
                 Ok(result) => JsonRpcResponse::ok(id, result),
                 Err(e) => JsonRpcResponse::error(id, e.code, e.message),
@@ -189,6 +205,7 @@ async fn call_tool(
         tools::TOOL_CONTEXT => tools::handle_context(graph, consent).await,
         tools::TOOL_PREFERENCES => tools::handle_preferences(graph, consent).await,
         tools::TOOL_INGEST => tools::handle_ingest(args, graph, consent).await,
+        tools::TOOL_SET_PREFERENCE => tools::handle_set_preference(args, graph, consent).await,
         _ => {
             return Err(JsonRpcError {
                 code: -32601,
@@ -278,7 +295,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn tools_list_returns_all_four_tools() {
+    async fn tools_list_returns_all_five_tools() {
         let (graph, consent) = make_handles();
         let r = dispatch(
             req(serde_json::json!(1), "tools/list", serde_json::json!({})),
@@ -294,7 +311,8 @@ mod tests {
         assert!(names.contains(&TOOL_CONTEXT));
         assert!(names.contains(&TOOL_PREFERENCES));
         assert!(names.contains(&TOOL_INGEST));
-        assert_eq!(names.len(), 4);
+        assert!(names.contains(&crate::tools::TOOL_SET_PREFERENCE));
+        assert_eq!(names.len(), 5);
     }
 
     #[tokio::test]

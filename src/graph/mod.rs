@@ -18,7 +18,7 @@ pub use insights::Insight;
 pub use queries::{
     topic_summary_key, AuditEntry, CoOccurrenceSummary, GraphError, Preferences, SessionSignalRow,
     SkillEdge, SkillNode, SkillNodeWithVelocity, SkillVelocity, TopicSummaryEntry,
-    VelocityDirection, WeeklySnapshot, TOPIC_SUMMARY_PREFIX,
+    VelocityDirection, WeeklySnapshot, TOPIC_SUMMARY_PREFIX, USER_PREF_PREFIX,
 };
 
 /// Preference-key namespace for dismissed insight ids.

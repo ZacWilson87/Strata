@@ -51,6 +51,7 @@ src/
 | `strata://skills` | Derived skill summary (never raw content) |
 | `strata://context/current` | Current session personalization context |
 | `strata://preferences` | User workflow preferences |
+| `strata_set_preference` | Write path: store a durable user workflow preference (cross-tool memory) |
 
 ---
 
@@ -102,6 +103,10 @@ Decisions live in `docs/adr/`. Before implementing a new module or changing an e
 This project uses a defined team of AI personas. See `AGENTS.md` for the full team topology, orchestration rules, and parallel work protocol. Invoke a persona with `/persona-<name>` (e.g., `/persona-architect`).
 
 ---
+
+## Strata Preference Capture
+
+When the user states a **durable workflow preference** — a lasting way they want AI tools to work, not a one-off instruction — call `strata_set_preference` with a short stable key and the preference phrased as an instruction any AI tool can follow. Examples: "stop using emojis in commit messages" → `{"key": "commit_emoji", "value": "never use emojis in commit messages"}`; "always plan before coding" → `{"key": "planning", "value": "outline the approach before writing code"}`. Never store one-off instructions, secrets, or personal data. Setting an empty value clears a key.
 
 ## Strata Work Unit Logging
 

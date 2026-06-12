@@ -98,6 +98,12 @@ pub struct TopicSummaryEntry {
 /// Preference-key namespace for stored topic summaries.
 pub const TOPIC_SUMMARY_PREFIX: &str = "topic_summary:";
 
+/// Preference-key namespace for user-set workflow preferences (the
+/// `strata_set_preference` write path). Separates durable user preferences
+/// from Strata's internal storage in the same table (`topic_summary:`,
+/// `insight_dismissed:`).
+pub const USER_PREF_PREFIX: &str = "pref:";
+
 /// Build the preference key for a topic summary:
 /// `topic_summary:<timestamp_ms>` or `topic_summary:<timestamp_ms>:<conversation_id>`.
 /// [`get_topic_summaries`] parses this format back.

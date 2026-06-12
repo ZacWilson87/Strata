@@ -60,6 +60,12 @@ pub enum AuditEvent {
     BackfillRun {
         sessions: usize,
     },
+    /// A user workflow preference was stored or cleared via the write path.
+    /// Only the (sanitized) key is recorded — never the value.
+    PreferenceSet {
+        key: String,
+        cleared: bool,
+    },
     SkillQueried,
     ContextQueried,
     PreferencesQueried,
@@ -74,6 +80,7 @@ impl AuditEvent {
             AuditEvent::DataDeleted => "data_deleted",
             AuditEvent::SkillIngested { .. } => "skill_ingested",
             AuditEvent::BackfillRun { .. } => "backfill_run",
+            AuditEvent::PreferenceSet { .. } => "preference_set",
             AuditEvent::SkillQueried => "skill_queried",
             AuditEvent::ContextQueried => "context_queried",
             AuditEvent::PreferencesQueried => "preferences_queried",
@@ -84,6 +91,11 @@ impl AuditEvent {
         match self {
             AuditEvent::SkillIngested { count, tool } => Some(format!("count={count} tool={tool}")),
             AuditEvent::BackfillRun { sessions } => Some(format!("sessions={sessions}")),
+            AuditEvent::PreferenceSet { key, cleared } => Some(if *cleared {
+                format!("key={key} cleared")
+            } else {
+                format!("key={key}")
+            }),
             _ => None,
         }
     }
@@ -400,6 +412,26 @@ mod tests {
             .unwrap()
         };
         assert_eq!(detail.as_deref(), Some("count=7 tool=claude"));
+    }
+
+    #[test]
+    fn preference_set_audit_detail_contains_key_only() {
+        // The preference VALUE may be personal — only the key may be audited.
+        let set = AuditEvent::PreferenceSet {
+            key: "commit_style".into(),
+            cleared: false,
+        };
+        assert_eq!(set.as_str(), "preference_set");
+        assert_eq!(set.detail().as_deref(), Some("key=commit_style"));
+
+        let cleared = AuditEvent::PreferenceSet {
+            key: "commit_style".into(),
+            cleared: true,
+        };
+        assert_eq!(
+            cleared.detail().as_deref(),
+            Some("key=commit_style cleared")
+        );
     }
 
     #[test]

@@ -4,13 +4,14 @@
 use std::sync::Arc;
 
 use crate::consent::{AuditEvent, ConsentError, ConsentGate};
-use crate::graph::{topic_summary_key, GraphHandle, TOPIC_SUMMARY_PREFIX};
-use crate::signals::{process_ingest, IngestPayload};
+use crate::graph::{topic_summary_key, GraphHandle, TOPIC_SUMMARY_PREFIX, USER_PREF_PREFIX};
+use crate::signals::{process_ingest, sanitize_preference_key, IngestPayload};
 
 pub const TOOL_SKILLS: &str = "strata_skills";
 pub const TOOL_CONTEXT: &str = "strata_context";
 pub const TOOL_PREFERENCES: &str = "strata_preferences";
 pub const TOOL_INGEST: &str = "strata_ingest";
+pub const TOOL_SET_PREFERENCE: &str = "strata_set_preference";
 
 /// Error type for tool handler failures.
 #[derive(Debug, thiserror::Error)]
@@ -86,28 +87,216 @@ pub async fn handle_skills(
     }))
 }
 
-/// Handle `strata/context` — returns the current session personalization context.
+/// How many top skills / domains / topics the context briefing includes.
+/// Kept small on purpose — this payload is read at session start, so every
+/// entry costs the user tokens in their AI tool.
+const CONTEXT_TOP_SKILLS: usize = 8;
+const CONTEXT_TOP_DOMAINS: usize = 5;
+const CONTEXT_RECENT_TOPICS: usize = 5;
+const CONTEXT_MAX_INSIGHTS: usize = 2;
+
+/// Handle `strata/context` — a structured session-start briefing.
+///
+/// Assembles what the AI tool actually needs to start warm: recency-weighted
+/// top skills, active domains and work mix from the last 30 days, the latest
+/// topic summaries, stored user preferences, and current workflow insights.
+/// The `context` field is a compact human-readable rendering of the same data
+/// (kept for backwards compatibility and for models that prefer prose).
 pub async fn handle_context(
     graph: &Arc<GraphHandle>,
     consent: &Arc<ConsentGate>,
 ) -> Result<serde_json::Value, ToolError> {
     consent.check()?;
     consent.record(AuditEvent::ContextQueried)?;
-    let context = graph.get_context_summary()?;
+
+    // Recency-weighted strengths, split by tag namespace.
+    let strengths = graph.get_recent_strengths()?;
+    let mut skills: Vec<(&str, f64)> = Vec::new();
+    let mut domains: Vec<(&str, f64)> = Vec::new();
+    for (tag, strength) in &strengths {
+        if *strength <= 0.0 {
+            continue;
+        }
+        if let Some(dt) = tag.strip_prefix("dt:") {
+            domains.push((dt, *strength));
+        } else if !tag.contains(':') {
+            skills.push((tag, *strength));
+        }
+    }
+    let by_strength = |a: &(&str, f64), b: &(&str, f64)| {
+        b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal)
+    };
+    skills.sort_by(by_strength);
+    domains.sort_by(by_strength);
+    skills.truncate(CONTEXT_TOP_SKILLS);
+    domains.truncate(CONTEXT_TOP_DOMAINS);
+
+    // Work mix over the last 30 days of session signals.
+    let mut work_mix: std::collections::BTreeMap<String, i64> = std::collections::BTreeMap::new();
+    for row in graph.get_session_signals_since(30)? {
+        if let Some(wt) = row.work_type {
+            *work_mix.entry(wt).or_insert(0) += 1;
+        }
+    }
+
+    let recent_topics: Vec<String> = graph
+        .get_topic_summaries()?
+        .into_iter()
+        .take(CONTEXT_RECENT_TOPICS)
+        .map(|t| t.summary)
+        .collect();
+
+    let preferences = user_preferences_map(graph)?;
+
+    let insights: Vec<String> = graph
+        .get_insights()?
+        .into_iter()
+        .take(CONTEXT_MAX_INSIGHTS)
+        .map(|i| format!("{} — {}", i.title, i.evidence))
+        .collect();
+
+    // Compact prose rendering of the same data.
+    let round1 = |v: f64| (v * 10.0).round() / 10.0;
+    let mut lines: Vec<String> = Vec::new();
+    if !skills.is_empty() {
+        let list: Vec<String> = skills
+            .iter()
+            .map(|(t, s)| format!("{t} ({})", round1(*s)))
+            .collect();
+        lines.push(format!(
+            "Top skills (recency-weighted): {}",
+            list.join(", ")
+        ));
+    }
+    if !domains.is_empty() {
+        let list: Vec<String> = domains.iter().map(|(t, _)| t.to_string()).collect();
+        lines.push(format!("Active domains: {}", list.join(", ")));
+    }
+    if !work_mix.is_empty() {
+        let list: Vec<String> = work_mix.iter().map(|(k, v)| format!("{k} {v}")).collect();
+        lines.push(format!("Work mix (30d): {}", list.join(", ")));
+    }
+    if !recent_topics.is_empty() {
+        lines.push(format!("Recent topics: {}", recent_topics.join("; ")));
+    }
+    if !preferences.is_empty() {
+        let list: Vec<String> = preferences
+            .iter()
+            .map(|(k, v)| format!("{k}: {v}"))
+            .collect();
+        lines.push(format!(
+            "User preferences (follow these): {}",
+            list.join("; ")
+        ));
+    }
+    if !insights.is_empty() {
+        lines.push(format!("Workflow watch-outs: {}", insights.join(" | ")));
+    }
+    let context = if lines.is_empty() {
+        "No context available yet.".to_string()
+    } else {
+        lines.join("\n")
+    };
+
     Ok(serde_json::json!({
-        "context": context.as_str(),
+        "context": context,
+        "skills": skills
+            .iter()
+            .map(|(t, s)| serde_json::json!({ "tag": t, "recent_strength": round1(*s) }))
+            .collect::<Vec<_>>(),
+        "domains": domains.iter().map(|(t, _)| *t).collect::<Vec<_>>(),
+        "work_mix_30d": work_mix,
+        "recent_topics": recent_topics,
+        "preferences": preferences,
+        "insights": insights,
     }))
 }
 
-/// Handle `strata/preferences` — returns the user's stored workflow preferences.
+/// Handle `strata/preferences` — returns the user's stored workflow
+/// preferences (the `pref:` namespace, keys stripped). Strata's internal
+/// preference storage (topic summaries, insight dismissals) is not exposed.
 pub async fn handle_preferences(
     graph: &Arc<GraphHandle>,
     consent: &Arc<ConsentGate>,
 ) -> Result<serde_json::Value, ToolError> {
     consent.check()?;
     consent.record(AuditEvent::PreferencesQueried)?;
-    let prefs = graph.get_preferences()?;
-    Ok(serde_json::json!({ "preferences": prefs.0 }))
+    Ok(serde_json::json!({ "preferences": user_preferences_map(graph)? }))
+}
+
+/// User preferences as a sorted key → value map with the namespace stripped.
+fn user_preferences_map(
+    graph: &GraphHandle,
+) -> Result<std::collections::BTreeMap<String, String>, ToolError> {
+    Ok(graph
+        .get_preferences_with_prefix(USER_PREF_PREFIX)?
+        .into_iter()
+        .filter_map(|(k, v)| k.strip_prefix(USER_PREF_PREFIX).map(|k| (k.to_string(), v)))
+        .collect())
+}
+
+/// Server-side caps for the preference write path.
+const MAX_PREFERENCE_VALUE_CHARS: usize = 500;
+const MAX_USER_PREFERENCES: usize = 100;
+
+#[derive(serde::Deserialize)]
+struct SetPreferencePayload {
+    key: String,
+    #[serde(default)]
+    value: String,
+}
+
+/// Handle `strata/set_preference` — store (or clear) a durable user workflow
+/// preference. This is the cross-tool memory write path: a preference stated
+/// once in any connected AI tool is served to every other tool via
+/// `strata_preferences` and the `strata_context` briefing.
+///
+/// An empty `value` clears the preference. Keys are validated (lowercase
+/// `[a-z0-9_.-]`, ≤64 chars — colons rejected so clients cannot write into
+/// internal namespaces); values are truncated at 500 chars; at most 100
+/// preferences are kept.
+pub async fn handle_set_preference(
+    params: serde_json::Value,
+    graph: &Arc<GraphHandle>,
+    consent: &Arc<ConsentGate>,
+) -> Result<serde_json::Value, ToolError> {
+    consent.check()?;
+
+    let payload: SetPreferencePayload =
+        serde_json::from_value(params).map_err(|e| ToolError::BadRequest(e.to_string()))?;
+    let key = sanitize_preference_key(&payload.key).ok_or_else(|| {
+        ToolError::BadRequest(
+            "invalid preference key: use lowercase letters, digits, '_', '-', '.' (max 64 chars)"
+                .into(),
+        )
+    })?;
+    let stored_key = format!("{USER_PREF_PREFIX}{key}");
+
+    let value = payload.value.trim();
+    if value.is_empty() {
+        graph.delete_preference(&stored_key)?;
+        consent.record(AuditEvent::PreferenceSet {
+            key: key.clone(),
+            cleared: true,
+        })?;
+        return Ok(serde_json::json!({ "key": key, "status": "cleared" }));
+    }
+
+    let value: String = value.chars().take(MAX_PREFERENCE_VALUE_CHARS).collect();
+    let existing = graph.get_preferences_with_prefix(USER_PREF_PREFIX)?;
+    let is_new = !existing.iter().any(|(k, _)| k == &stored_key);
+    if is_new && existing.len() >= MAX_USER_PREFERENCES {
+        return Err(ToolError::BadRequest(format!(
+            "preference limit reached ({MAX_USER_PREFERENCES}) — clear one before adding more"
+        )));
+    }
+
+    graph.set_preference(&stored_key, &value)?;
+    consent.record(AuditEvent::PreferenceSet {
+        key: key.clone(),
+        cleared: false,
+    })?;
+    Ok(serde_json::json!({ "key": key, "status": "stored" }))
 }
 
 /// Handle `strata/ingest` — receives raw signals from AI clients, processes them, discards raw content.
@@ -241,16 +430,199 @@ mod tests {
     async fn context_returns_derived_summary() {
         let (graph, consent) = make_handles();
         let result = handle_context(&graph, &consent).await.unwrap();
-        assert!(result.get("context").is_some());
+        assert_eq!(
+            result["context"].as_str().unwrap(),
+            "No context available yet."
+        );
     }
 
     #[tokio::test]
-    async fn preferences_returns_preferences_object() {
+    async fn context_briefing_includes_skills_preferences_and_topics() {
         let (graph, consent) = make_handles();
-        graph.set_preference("theme", "dark").unwrap();
+        graph.upsert_skill(&SkillTag::new("rust")).unwrap();
+        graph
+            .upsert_skill(&SkillTag::new("dt:mcp-protocol"))
+            .unwrap();
+        graph
+            .set_preference("pref:commit_style", "no emojis in commit messages")
+            .unwrap();
+        graph
+            .set_preference("topic_summary:1700000000000", "built the ingest pipeline")
+            .unwrap();
+
+        let result = handle_context(&graph, &consent).await.unwrap();
+        let context = result["context"].as_str().unwrap();
+        assert!(context.contains("rust"), "skills missing: {context}");
+        assert!(
+            context.contains("mcp-protocol"),
+            "domains missing: {context}"
+        );
+        assert!(
+            context.contains("no emojis in commit messages"),
+            "preferences missing: {context}"
+        );
+        assert!(
+            context.contains("built the ingest pipeline"),
+            "topics missing: {context}"
+        );
+
+        // Structured fields mirror the prose.
+        assert_eq!(result["domains"][0].as_str(), Some("mcp-protocol"));
+        assert_eq!(
+            result["preferences"]["commit_style"].as_str(),
+            Some("no emojis in commit messages")
+        );
+        // Internal namespaces never leak as preference keys.
+        assert!(result["preferences"]
+            .get("topic_summary:1700000000000")
+            .is_none());
+    }
+
+    #[tokio::test]
+    async fn context_excludes_tool_and_worktype_tags_from_skills() {
+        let (graph, consent) = make_handles();
+        graph
+            .upsert_skill(&SkillTag::new("tool:claude-code"))
+            .unwrap();
+        graph.upsert_skill(&SkillTag::new("wt:debugging")).unwrap();
+        let result = handle_context(&graph, &consent).await.unwrap();
+        assert!(result["skills"].as_array().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn preferences_returns_only_user_namespace_stripped() {
+        let (graph, consent) = make_handles();
+        graph.set_preference("pref:theme", "dark").unwrap();
+        graph.set_preference("topic_summary:1", "internal").unwrap();
+        graph.set_preference("insight_dismissed:x", "ts").unwrap();
         let result = handle_preferences(&graph, &consent).await.unwrap();
         let prefs = result["preferences"].as_object().unwrap();
         assert_eq!(prefs["theme"].as_str().unwrap(), "dark");
+        assert_eq!(prefs.len(), 1, "internal keys must not be exposed");
+    }
+
+    #[tokio::test]
+    async fn set_preference_roundtrips_through_preferences_and_context() {
+        let (graph, consent) = make_handles();
+        let result = handle_set_preference(
+            serde_json::json!({ "key": "Commit_Style", "value": "no emojis" }),
+            &graph,
+            &consent,
+        )
+        .await
+        .unwrap();
+        assert_eq!(result["status"].as_str(), Some("stored"));
+        assert_eq!(
+            result["key"].as_str(),
+            Some("commit_style"),
+            "key normalised"
+        );
+
+        let prefs = handle_preferences(&graph, &consent).await.unwrap();
+        assert_eq!(
+            prefs["preferences"]["commit_style"].as_str(),
+            Some("no emojis")
+        );
+        let context = handle_context(&graph, &consent).await.unwrap();
+        assert!(context["context"].as_str().unwrap().contains("no emojis"));
+    }
+
+    #[tokio::test]
+    async fn set_preference_empty_value_clears() {
+        let (graph, consent) = make_handles();
+        for value in ["keep it brief", ""] {
+            handle_set_preference(
+                serde_json::json!({ "key": "verbosity", "value": value }),
+                &graph,
+                &consent,
+            )
+            .await
+            .unwrap();
+        }
+        let prefs = handle_preferences(&graph, &consent).await.unwrap();
+        assert!(prefs["preferences"].as_object().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn set_preference_rejects_namespace_forgery_and_bad_keys() {
+        let (graph, consent) = make_handles();
+        for key in ["topic_summary:1", "pref:nested", "has spaces", "", "x:y"] {
+            let err = handle_set_preference(
+                serde_json::json!({ "key": key, "value": "v" }),
+                &graph,
+                &consent,
+            )
+            .await
+            .unwrap_err();
+            assert!(
+                matches!(err, ToolError::BadRequest(_)),
+                "key {key:?} must be rejected"
+            );
+        }
+        // Nothing was written under any namespace.
+        assert!(graph.get_preferences().unwrap().0.is_empty());
+    }
+
+    #[tokio::test]
+    async fn set_preference_caps_value_and_count() {
+        let (graph, consent) = make_handles();
+        // Oversized value is truncated, not rejected.
+        handle_set_preference(
+            serde_json::json!({ "key": "long", "value": "x".repeat(2000) }),
+            &graph,
+            &consent,
+        )
+        .await
+        .unwrap();
+        let prefs = handle_preferences(&graph, &consent).await.unwrap();
+        assert_eq!(
+            prefs["preferences"]["long"]
+                .as_str()
+                .unwrap()
+                .chars()
+                .count(),
+            500
+        );
+
+        // 101st distinct key is rejected; updating an existing key still works.
+        for i in 1..100 {
+            handle_set_preference(
+                serde_json::json!({ "key": format!("k{i}"), "value": "v" }),
+                &graph,
+                &consent,
+            )
+            .await
+            .unwrap();
+        }
+        let err = handle_set_preference(
+            serde_json::json!({ "key": "overflow", "value": "v" }),
+            &graph,
+            &consent,
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(err, ToolError::BadRequest(_)));
+        handle_set_preference(
+            serde_json::json!({ "key": "long", "value": "updated" }),
+            &graph,
+            &consent,
+        )
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn set_preference_blocked_when_consent_paused() {
+        let (graph, consent) = make_handles();
+        consent.pause().unwrap();
+        let err = handle_set_preference(
+            serde_json::json!({ "key": "style", "value": "v" }),
+            &graph,
+            &consent,
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(err, ToolError::Consent(_)));
     }
 
     #[tokio::test]
