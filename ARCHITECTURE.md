@@ -164,7 +164,7 @@ Single SQLite file, WAL mode. Location:
 | Linux | `~/.local/share/strata/strata.db` |
 | Windows | `%APPDATA%\Strata\strata.db` |
 
-Tables: `skills`, `skill_edges`, `skill_events`, `session_signals`, `ingested_sessions`, `preferences`, `audit_log`
+Tables: `skills`, `skill_edges`, `skill_events`, `session_signals`, `session_metrics`, `ingested_sessions`, `preferences`, `audit_log`
 
 The database file is restricted to owner-only permissions (0600) on Unix.
 `secure_delete` is enabled, and consent revocation wipes skills, edges, events,

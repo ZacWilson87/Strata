@@ -286,6 +286,7 @@ pub fn delete_all_data(conn: &Connection) -> Result<(), GraphError> {
          DELETE FROM skill_events;
          DELETE FROM session_signals;
          DELETE FROM ingested_sessions;
+         DELETE FROM session_metrics;
          DELETE FROM preferences;",
     )?;
     // Best-effort scrub: checkpoint failure (e.g. another connection holds a
@@ -695,6 +696,114 @@ pub fn get_session_signals_since(
             },
         )
         .collect();
+    Ok(rows)
+}
+
+/// Objective per-session mechanics computed locally from a transcript
+/// (ADR 0008). Pure numbers — no content of any kind.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct SessionMetricsRow {
+    /// Transcript session id (file stem).
+    pub session_id: String,
+    /// UTC day of the session's last activity ("YYYY-MM-DD").
+    pub day: String,
+    /// Tool that produced the transcript (e.g. "claude-code").
+    pub tool: String,
+    /// Structurally-detected work type, if any (e.g. "debugging").
+    pub work_type: Option<String>,
+    /// Genuine user prompts typed during the session.
+    pub prompts: i64,
+    /// Assistant turns (messages containing content).
+    pub assistant_turns: i64,
+    /// Wall-clock span from first to last transcript timestamp, in minutes.
+    pub duration_min: f64,
+    /// User interruptions of in-flight work ("[Request interrupted…").
+    pub interruptions: i64,
+    /// Tool invocations the assistant made.
+    pub tool_calls: i64,
+    /// Tool invocations that returned an error.
+    pub tool_errors: i64,
+    /// Character length of the first genuine user prompt.
+    pub first_prompt_chars: i64,
+    /// Mean character length across genuine user prompts.
+    pub avg_prompt_chars: i64,
+}
+
+/// Record a session's mechanics. Idempotent per session id, so backfill and
+/// the session-end hook can both attempt the write safely.
+pub fn record_session_metrics(
+    conn: &Connection,
+    row: &SessionMetricsRow,
+) -> Result<(), GraphError> {
+    conn.execute(
+        "INSERT INTO session_metrics (session_id, day, tool, work_type, prompts,
+             assistant_turns, duration_min, interruptions, tool_calls, tool_errors,
+             first_prompt_chars, avg_prompt_chars)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
+         ON CONFLICT(session_id) DO NOTHING",
+        params![
+            row.session_id,
+            row.day,
+            row.tool,
+            row.work_type,
+            row.prompts,
+            row.assistant_turns,
+            row.duration_min,
+            row.interruptions,
+            row.tool_calls,
+            row.tool_errors,
+            row.first_prompt_chars,
+            row.avg_prompt_chars,
+        ],
+    )?;
+    Ok(())
+}
+
+/// Whether mechanics have already been recorded for a session.
+pub fn has_session_metrics(conn: &Connection, session_id: &str) -> Result<bool, GraphError> {
+    let found: Option<i64> = conn
+        .query_row(
+            "SELECT 1 FROM session_metrics WHERE session_id = ?1",
+            params![session_id],
+            |r| r.get(0),
+        )
+        .optional()?;
+    Ok(found.is_some())
+}
+
+/// Return session metrics from the last `days` days, newest first.
+pub fn get_session_metrics_since(
+    conn: &Connection,
+    days: i64,
+) -> Result<Vec<SessionMetricsRow>, GraphError> {
+    let cutoff = (Utc::now() - chrono::Duration::days(days))
+        .date_naive()
+        .to_string();
+    let mut stmt = conn.prepare(
+        "SELECT session_id, day, tool, work_type, prompts, assistant_turns, duration_min,
+                interruptions, tool_calls, tool_errors, first_prompt_chars, avg_prompt_chars
+         FROM session_metrics
+         WHERE day >= ?1
+         ORDER BY day DESC",
+    )?;
+    let rows = stmt
+        .query_map(params![cutoff], |r| {
+            Ok(SessionMetricsRow {
+                session_id: r.get(0)?,
+                day: r.get(1)?,
+                tool: r.get(2)?,
+                work_type: r.get(3)?,
+                prompts: r.get(4)?,
+                assistant_turns: r.get(5)?,
+                duration_min: r.get(6)?,
+                interruptions: r.get(7)?,
+                tool_calls: r.get(8)?,
+                tool_errors: r.get(9)?,
+                first_prompt_chars: r.get(10)?,
+                avg_prompt_chars: r.get(11)?,
+            })
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
     Ok(rows)
 }
 

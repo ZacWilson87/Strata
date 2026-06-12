@@ -429,6 +429,15 @@ body::after {
 .connect-state { font-size: 11px; color: var(--ok); letter-spacing: 0.05em; }
 .connect-foot { margin-top: 12px; }
 
+/* ── session mechanics ──────────────────────────────────────────────────── */
+
+.mech-strip {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(148px, 1fr));
+  gap: 10px;
+}
+.mech-stat { display: flex; flex-direction: column; gap: 4px; padding: 14px 16px; }
+
 /* ── preferences ────────────────────────────────────────────────────────── */
 
 .pref-form { display: flex; gap: 8px; margin-top: 12px; }

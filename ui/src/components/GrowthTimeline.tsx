@@ -1,8 +1,16 @@
 import { useEffect, useMemo, useState } from "react";
-import { dismissInsight, getGrowth, getInsights, getSkillHistory, getTopicSummaries } from "../ipc";
+import {
+  dismissInsight,
+  getGrowth,
+  getInsights,
+  getSessionMechanics,
+  getSkillHistory,
+  getTopicSummaries,
+} from "../ipc";
 import type {
   GrowthResponse,
   Insight,
+  SessionMechanics,
   SkillWithVelocity,
   TopicSummaryEntry,
   VelocityDirection,
@@ -29,20 +37,26 @@ export default function GrowthTimeline() {
   const [weeks, setWeeks] = useState<WeeklySnapshot[]>([]);
   const [journal, setJournal] = useState<TopicSummaryEntry[]>([]);
   const [insights, setInsights] = useState<Insight[]>([]);
+  const [mechanics, setMechanics] = useState<SessionMechanics | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    Promise.allSettled([getGrowth(), getSkillHistory(), getTopicSummaries(), getInsights()]).then(
-      ([g, h, t, ins]) => {
-        if (g.status === "fulfilled") setGrowth(g.value);
-        if (h.status === "fulfilled") setWeeks(h.value.weeks);
-        if (t.status === "fulfilled") setJournal(t.value.summaries);
-        if (ins.status === "fulfilled") setInsights(ins.value.insights);
-        if (g.status === "rejected") setError(String(g.reason));
-        setLoading(false);
-      }
-    );
+    Promise.allSettled([
+      getGrowth(),
+      getSkillHistory(),
+      getTopicSummaries(),
+      getInsights(),
+      getSessionMechanics(),
+    ]).then(([g, h, t, ins, mech]) => {
+      if (g.status === "fulfilled") setGrowth(g.value);
+      if (h.status === "fulfilled") setWeeks(h.value.weeks);
+      if (t.status === "fulfilled") setJournal(t.value.summaries);
+      if (ins.status === "fulfilled") setInsights(ins.value.insights);
+      if (mech.status === "fulfilled") setMechanics(mech.value);
+      if (g.status === "rejected") setError(String(g.reason));
+      setLoading(false);
+    });
   }, []);
 
   const handleDismiss = async (id: string) => {
@@ -127,6 +141,45 @@ export default function GrowthTimeline() {
             {insights.map((insight) => (
               <InsightCard key={insight.id} insight={insight} onDismiss={handleDismiss} />
             ))}
+          </div>
+        </section>
+      )}
+
+      {/* ── Session mechanics (ADR 0008) ── */}
+      {mechanics && mechanics.sessions > 0 && (
+        <section className="section rise rise-1">
+          <div className="section-head">
+            <div>
+              <h2 className="h-section">Session Mechanics</h2>
+              <p className="sub" style={{ marginTop: 3 }}>
+                How your sessions actually run — measured locally from your own
+                transcripts, last {mechanics.window_days} days.
+              </p>
+            </div>
+          </div>
+          <div className="mech-strip">
+            <MechStat value={String(mechanics.sessions)} label="sessions measured" />
+            <MechStat value={String(mechanics.avg_prompts)} label="prompts / session" />
+            <MechStat
+              value={`${Math.round(mechanics.median_duration_min)}m`}
+              label="median active time"
+            />
+            <MechStat
+              value={`${mechanics.interrupted_sessions}/${mechanics.sessions}`}
+              label="interrupted mid-task"
+            />
+            <MechStat
+              value={
+                mechanics.tool_calls > 0
+                  ? `${Math.round((mechanics.tool_errors / mechanics.tool_calls) * 100)}%`
+                  : "—"
+              }
+              label={`tool errors (${mechanics.tool_calls} calls)`}
+            />
+            <MechStat
+              value={String(mechanics.avg_first_prompt_chars)}
+              label="avg opening prompt (chars)"
+            />
           </div>
         </section>
       )}
@@ -258,6 +311,15 @@ function InsightCard({
       >
         ✕
       </button>
+    </div>
+  );
+}
+
+function MechStat({ value, label }: { value: string; label: string }) {
+  return (
+    <div className="card mech-stat">
+      <span className="num-display">{value}</span>
+      <span className="scan-label">{label}</span>
     </div>
   );
 }
