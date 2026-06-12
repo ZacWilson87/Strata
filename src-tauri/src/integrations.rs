@@ -12,6 +12,7 @@ use std::path::{Path, PathBuf};
 /// Stable integration identifiers used by the frontend.
 pub const CLAUDE_DESKTOP: &str = "claude_desktop";
 pub const CURSOR: &str = "cursor";
+pub const WINDSURF: &str = "windsurf";
 pub const CLAUDE_CODE_HOOK: &str = "claude_code_hook";
 pub const CLAUDE_CODE_MCP: &str = "claude_code_mcp";
 
@@ -79,6 +80,10 @@ fn claude_desktop_config_path() -> Result<PathBuf, String> {
 
 fn cursor_config_path() -> Result<PathBuf, String> {
     Ok(home()?.join(".cursor/mcp.json"))
+}
+
+fn windsurf_config_path() -> Result<PathBuf, String> {
+    Ok(home()?.join(".codeium/windsurf/mcp_config.json"))
 }
 
 fn claude_code_settings_path() -> Result<PathBuf, String> {
@@ -245,6 +250,19 @@ pub fn status_all() -> Result<Vec<IntegrationStatus>, String> {
         });
     }
     {
+        let path = windsurf_config_path()?;
+        let detected = path.parent().is_some_and(Path::is_dir);
+        let installed = matches!(read_json(&path), Ok(Some(ref c)) if has_strata_mcp_entry(c));
+        out.push(IntegrationStatus {
+            id: WINDSURF.into(),
+            name: "Windsurf".into(),
+            detected,
+            installed,
+            auto_installable: true,
+            manual_command: None,
+        });
+    }
+    {
         let path = claude_code_settings_path()?;
         let detected = path.parent().is_some_and(Path::is_dir);
         let installed = matches!(read_json(&path), Ok(Some(ref s)) if has_session_end_hook(s));
@@ -290,6 +308,13 @@ pub fn install(id: &str) -> Result<Vec<IntegrationStatus>, String> {
         }
         CURSOR => {
             install_mcp_entry(&cursor_config_path()?, &binary)?;
+        }
+        WINDSURF => {
+            let path = windsurf_config_path()?;
+            if !path.parent().is_some_and(Path::is_dir) {
+                return Err("Windsurf does not appear to be installed".into());
+            }
+            install_mcp_entry(&path, &binary)?;
         }
         CLAUDE_CODE_HOOK => {
             let path = claude_code_settings_path()?;

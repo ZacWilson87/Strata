@@ -280,6 +280,14 @@ const MOCK_INTEGRATIONS: IntegrationsResponse = {
       manual_command: null,
     },
     {
+      id: "windsurf",
+      name: "Windsurf",
+      detected: true,
+      installed: false,
+      auto_installable: true,
+      manual_command: null,
+    },
+    {
       id: "claude_code_hook",
       name: "Claude Code — session capture hook",
       detected: true,

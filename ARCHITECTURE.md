@@ -102,7 +102,7 @@ Tags in the `skills` table use prefixes to separate concerns:
 
 ## MCP Transport
 
-JSON-RPC 2.0 over **stdio** (newline-delimited). AI clients spawn the `strata` binary directly — no TCP port, no firewall config needed. Protocol version: `2024-11-05`.
+JSON-RPC 2.0 over **stdio** (newline-delimited). Any MCP-capable client (Claude Desktop/Code, Cursor, Windsurf, Zed, Cline, …) spawns the `strata` binary directly — no TCP port, no firewall config needed. Protocol version: `2024-11-05`.
 
 ### Lifecycle (standard MCP handshake)
 
