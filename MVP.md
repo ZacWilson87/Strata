@@ -26,8 +26,10 @@ Endpoints:
 
 ### Integrations
 
-- Claude
+- Claude (Desktop + Code)
 - Cursor
+- Windsurf
+- Any MCP-capable client (see docs/client-rules.md)
 
 ### Dashboard
 

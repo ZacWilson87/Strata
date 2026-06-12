@@ -188,9 +188,10 @@ export default function SetupPanel() {
           ))}
         </div>
         <p className="sub connect-foot">
-          The session capture hook records each Claude Code session as it ends,
-          so the dashboard never misses work. Connections edit local config
-          files only.
+          Strata speaks standard MCP — any MCP-capable client works (Zed,
+          Cline, and others: see docs/client-rules.md for copy-paste rules).
+          The session capture hook records each Claude Code session as it
+          ends. Connections edit local config files only.
         </p>
       </section>
     </div>
