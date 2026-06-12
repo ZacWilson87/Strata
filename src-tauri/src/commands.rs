@@ -125,3 +125,47 @@ pub async fn get_topic_summaries(
         .map_err(|e| e.to_string())?;
     Ok(serde_json::json!({ "summaries": summaries }))
 }
+
+/// Scan `~/.claude/projects` for importable transcripts. Read-only: counts and
+/// a date range from file metadata, no transcript content is opened.
+#[tauri::command]
+pub async fn scan_transcripts(
+    state: tauri::State<'_, AppState>,
+) -> Result<serde_json::Value, String> {
+    state.consent.check().map_err(|e| e.to_string())?;
+    let root = strata::backfill::default_transcripts_root()
+        .ok_or_else(|| "could not resolve home directory".to_string())?;
+    let report = strata::backfill::scan(&root, &state.graph).map_err(|e| e.to_string())?;
+    serde_json::to_value(report).map_err(|e| e.to_string())
+}
+
+/// Import all not-yet-ingested local transcripts through the privacy pipeline.
+/// Parsing happens off the main thread; only derived tags are persisted.
+#[tauri::command]
+pub async fn run_backfill(state: tauri::State<'_, AppState>) -> Result<serde_json::Value, String> {
+    let graph = Arc::clone(&state.graph);
+    let consent = Arc::clone(&state.consent);
+    let report = tokio::task::spawn_blocking(move || {
+        let root = strata::backfill::default_transcripts_root()
+            .ok_or_else(|| "could not resolve home directory".to_string())?;
+        strata::backfill::run(&root, &graph, &consent).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())??;
+    serde_json::to_value(report).map_err(|e| e.to_string())
+}
+
+/// Read-only status of AI-client integrations (MCP configs + session hook).
+#[tauri::command]
+pub async fn get_integrations() -> Result<serde_json::Value, String> {
+    let statuses = crate::integrations::status_all()?;
+    Ok(serde_json::json!({ "integrations": statuses }))
+}
+
+/// Wire Strata into one AI client's local config. User-initiated from the
+/// Setup page; returns the refreshed status list.
+#[tauri::command]
+pub async fn install_integration(id: String) -> Result<serde_json::Value, String> {
+    let statuses = crate::integrations::install(&id)?;
+    Ok(serde_json::json!({ "integrations": statuses }))
+}

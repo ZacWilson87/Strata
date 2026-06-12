@@ -72,6 +72,28 @@ impl GraphHandle {
         queries::upsert_skill(&*self.conn()?, tag)
     }
 
+    /// Upsert a skill with an explicit event day and last-seen timestamp.
+    /// Used by the transcript backfill to attribute work to its real date.
+    pub fn upsert_skill_on_day(
+        &self,
+        tag: &SkillTag,
+        day: &str,
+        last_seen: &str,
+    ) -> Result<SkillNode, GraphError> {
+        queries::upsert_skill_on_day(&*self.conn()?, tag, day, last_seen)
+    }
+
+    /// Whether a transcript session id has already been ingested by the
+    /// backfill or the session-end hook.
+    pub fn is_session_ingested(&self, session_id: &str) -> Result<bool, GraphError> {
+        queries::is_session_ingested(&*self.conn_synced()?, session_id)
+    }
+
+    /// Mark a transcript session id as ingested (idempotent).
+    pub fn mark_session_ingested(&self, session_id: &str, day: &str) -> Result<(), GraphError> {
+        queries::mark_session_ingested(&*self.conn()?, session_id, day)
+    }
+
     /// Record a co-occurrence edge between two skills.
     pub fn record_co_occurrence(&self, a: &SkillTag, b: &SkillTag) -> Result<(), GraphError> {
         if a == b {

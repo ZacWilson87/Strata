@@ -404,6 +404,31 @@ body::after {
 .empty .title { font-family: var(--font-display); font-size: 16px; color: var(--ink-dim); margin-bottom: 8px; }
 .empty .hint { font-size: 12.5px; max-width: 330px; margin: 0 auto; line-height: 1.6; }
 
+/* ── setup ──────────────────────────────────────────────────────────────── */
+
+.import-card { padding: 20px 22px; }
+.scan-figures { display: flex; gap: 34px; margin-bottom: 10px; }
+.scan-figure { display: flex; flex-direction: column; gap: 2px; }
+.scan-label {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+}
+.scan-range { margin-bottom: 16px; }
+.import-actions { display: flex; align-items: center; gap: 14px; }
+.import-result { margin-top: 12px; color: var(--moss); }
+.setup-error { font-size: 12px; color: var(--rust); margin: 8px 0; }
+
+.connect-list { display: flex; flex-direction: column; gap: 8px; }
+.connect-row { display: flex; align-items: center; gap: 12px; padding: 13px 16px; }
+.connect-row .lamp { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+.connect-name { flex: 1; font-size: 13px; font-weight: 500; }
+.connect-note { color: var(--ink-faint); font-weight: 400; font-size: 12px; }
+.connect-state { font-size: 11px; color: var(--ok); letter-spacing: 0.05em; }
+.connect-foot { margin-top: 12px; }
+
 /* ── motion ─────────────────────────────────────────────────────────────── */
 
 @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }

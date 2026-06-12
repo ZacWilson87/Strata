@@ -1,3 +1,4 @@
+pub mod backfill;
 pub mod consent;
 pub mod graph;
 pub mod paths;

@@ -1,4 +1,4 @@
-export type Tab = "skills" | "consent" | "growth";
+export type Tab = "skills" | "consent" | "growth" | "setup";
 
 export interface SkillNode {
   id: string;
@@ -100,4 +100,36 @@ export interface Insight {
 
 export interface InsightsResponse {
   insights: Insight[];
+}
+
+/** Result of scanning local AI-session transcripts (counts only, no content). */
+export interface ScanReport {
+  projects: number;
+  sessions_total: number;
+  sessions_new: number;
+  earliest_day: string | null;
+  latest_day: string | null;
+}
+
+/** Result of importing local transcripts through the privacy pipeline. */
+export interface BackfillReport {
+  sessions_ingested: number;
+  sessions_self_reported: number;
+  sessions_duplicate: number;
+  sessions_empty: number;
+  skills_touched: number;
+}
+
+/** Status of one AI-client integration target. */
+export interface IntegrationStatus {
+  id: string;
+  name: string;
+  detected: boolean;
+  installed: boolean;
+  auto_installable: boolean;
+  manual_command: string | null;
+}
+
+export interface IntegrationsResponse {
+  integrations: IntegrationStatus[];
 }

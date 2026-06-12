@@ -157,7 +157,7 @@ Single SQLite file, WAL mode. Location:
 | Linux | `~/.local/share/strata/strata.db` |
 | Windows | `%APPDATA%\Strata\strata.db` |
 
-Tables: `skills`, `skill_edges`, `skill_events`, `session_signals`, `preferences`, `audit_log`
+Tables: `skills`, `skill_edges`, `skill_events`, `session_signals`, `ingested_sessions`, `preferences`, `audit_log`
 
 The database file is restricted to owner-only permissions (0600) on Unix.
 `secure_delete` is enabled, and consent revocation wipes skills, edges, events,
@@ -171,10 +171,11 @@ so deleted rows are not recoverable from the file.
 ```
 src/
 ├── lib.rs            Public API surface (re-exports all modules)
-├── main.rs           Binary entry point — opens DB, starts MCP server
+├── main.rs           Binary entry point — MCP server + `hook session-end` subcommand
 ├── paths.rs          Data-dir/db-path resolution shared by both binaries
 ├── private_mode.rs   Privacy newtypes: RawSignal, DerivedSummary, SkillTag, WorkType
 ├── signals/          In-memory signal processing + skill/work-type/domain extraction
+├── backfill/         Local transcript parser — bulk import + session-end hook (ADR 0006)
 ├── graph/            SQLite skill graph (schema, queries, GraphHandle)
 ├── consent/          ConsentGate + audit log
 ├── server/           MCP JSON-RPC server loop + routing
