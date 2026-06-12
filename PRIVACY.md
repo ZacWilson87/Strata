@@ -34,6 +34,21 @@ Users can:
 - export data
 - revoke sharing
 
+## Local History Import & Session Capture
+
+The optional transcript import (Setup page) and the Claude Code session-end
+hook read AI-session transcripts **that already live on your machine**. They
+are parsed locally, reduced to skill tags in memory, and discarded — the
+transcripts themselves are never copied, persisted, or transmitted. Both
+paths are consent-gated and recorded in the audit log.
+
+## Workflow Preferences
+
+Preferences you (or your AI tools, at your instruction) store via
+`strata_set_preference` stay local, are always visible and editable on the
+dashboard's Privacy page, and are wiped on revocation. The audit log records
+only the preference key — never the value.
+
 ## Trust by Design
 
 Privacy is not a feature.
@@ -55,6 +70,7 @@ Trust requires accuracy about what is and isn't protected today:
   content quality depends on the tool honoring that instruction. Summaries are
   stored locally only and are fully wiped on revocation.
 - **What revocation deletes:** all skills, co-occurrence edges, activity
-  events, and preferences (including topic summaries). Deleted data is
+  events, session signals, transcript-import markers, and preferences
+  (including topic summaries and workflow preferences). Deleted data is
   scrubbed (`secure_delete` + WAL truncate + VACUUM), not just unlinked. The
   consent audit log is retained as the record of consent decisions.
