@@ -7,7 +7,7 @@ Strata runs locally on the user's machine. It exposes derived intelligence throu
 ```text
 ┌─────────────────────────────────────┐
 │         AI Clients                  │
-│   Claude Desktop  /  Cursor         │
+│  Claude / Cursor / Windsurf / any   │
 └───────────────┬─────────────────────┘
                 │ MCP (JSON-RPC 2.0 / stdio)
 ┌───────────────▼─────────────────────┐
@@ -15,6 +15,7 @@ Strata runs locally on the user's machine. It exposes derived intelligence throu
 │   strata_skills                     │
 │   strata_context                    │
 │   strata_preferences                │
+│   strata_set_preference ◄── writes  │
 │   strata_ingest  ◄── receives raw   │
 │                      signals here   │
 └───────────────┬─────────────────────┘
@@ -97,6 +98,11 @@ Tags in the `skills` table use prefixes to separate concerns:
 | *(none)* | `rust`, `python` | Keyword extraction from content |
 | `wt:` | `wt:analysis`, `wt:debugging` | Work type — AI tool or structural fallback |
 | `dt:` | `dt:food_science`, `dt:fermentation` | Domain — AI tool pre-classification only |
+| `tool:` | `tool:claude-code`, `tool:cursor` | Which AI tool produced the signal |
+
+User workflow preferences live in the `preferences` table under the `pref:`
+namespace (written via `strata_set_preference`); Strata's internal storage
+shares the table under `topic_summary:` and `insight_dismissed:` keys.
 
 ---
 

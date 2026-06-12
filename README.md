@@ -5,7 +5,7 @@
 [![Rust](https://img.shields.io/badge/rust-stable-orange.svg)](https://www.rust-lang.org)
 [![MCP](https://img.shields.io/badge/MCP-2024--11--05-purple.svg)](https://modelcontextprotocol.io)
 
-> **Alpha** — core MCP server is functional. Desktop dashboard is in progress.
+> **Alpha** — MCP server, desktop dashboard, history import, and session capture are functional.
 
 ## Your AI tools should know who you are.
 
@@ -20,7 +20,9 @@ It runs as a local MCP server, extracting useful patterns from your AI workflows
 ## Why Strata?
 
 - **Private by design** — raw prompts never leave the device; only derived summaries are stored
-- **Works with tools you already use** — Claude, Cursor, any MCP-compatible client
+- **Starts useful in the first minute** — imports your existing Claude Code session history locally, so the dashboard is populated at install, not in two weeks
+- **Cross-tool memory** — say "no emojis in commit messages" once in any tool; every connected tool follows it (`strata_set_preference`)
+- **Works with tools you already use** — Claude, Cursor, Windsurf, any MCP-compatible client
 - **No local model required** — delegates classification to the AI tool already running (~10 tokens per session)
 - **Type-system enforced privacy** — Rust's type system prevents raw content from crossing module boundaries at compile time
 - **Standard protocol** — MCP 2024-11-05 over stdio; zero config, no firewall changes
@@ -60,7 +62,14 @@ cargo build --release
 
 The binary at `./target/release/strata` is a self-contained MCP server over stdio.
 
-### Connect to Claude Desktop
+### One-click setup (recommended)
+
+Run the desktop app (`cargo tauri dev`) and open the **Setup** page: it
+imports your existing local history and writes the MCP configs for Claude
+Desktop, Cursor, and Windsurf — plus a Claude Code session-capture hook —
+with one click each.
+
+### Connect to Claude Desktop manually
 
 Add to `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS) or `%APPDATA%\Claude\claude_desktop_config.json` (Windows):
 
@@ -113,14 +122,19 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) and [docs/adr/](docs/adr/) for the full d
 
 | Tool | Description |
 |---|---|
-| `strata/skills` | Ranked skill list, work types, domains, derived summary |
-| `strata/context` | Current session personalization context |
-| `strata/preferences` | Stored workflow preferences |
-| `strata/ingest` | Receive signals; raw content discarded immediately |
+| `strata_skills` | Ranked skill list, work types, domains, derived summary |
+| `strata_context` | Session-start briefing: top skills, active domains, work mix, recent topics, preferences, insights |
+| `strata_preferences` | Stored user workflow preferences |
+| `strata_set_preference` | Store a durable preference once; every connected tool follows it |
+| `strata_ingest` | Receive signals; raw content discarded immediately |
 
 ---
 
 ## Integrating Your AI Tool
+
+> Copy-paste rules snippets for Cursor, Windsurf, Zed, and Cline live in
+> [docs/client-rules.md](docs/client-rules.md) — they cover work-unit logging,
+> preference capture, and session-start context.
 
 Strata uses the AI tool you're already running as the taxonomizer. The AI calls `strata_ingest` once per **completed work unit** — not once per conversation. A work unit is a discrete task: a bug fixed, a feature built, a research query completed, or a significant topic shift. Multiple calls per conversation are expected and correct.
 
@@ -205,6 +219,10 @@ Strata implements the MCP 2024-11-05 protocol. Any tool supporting `tools/call` 
 cargo tauri dev
 ```
 
+The dashboard includes the skill map, growth timeline (momentum, weekly
+strata, insights, work journal), privacy controls with the audit log and
+preference manager, and the Setup page (history import + tool connections).
+
 ### Run tests
 
 ```bash
@@ -221,7 +239,7 @@ cargo build              # development build
 cargo test               # unit + integration tests
 cargo clippy -- -D warnings   # lint (warnings = errors)
 cargo fmt                # auto-format
-cargo tauri dev          # desktop dashboard (WIP)
+cargo tauri dev          # desktop dashboard
 ```
 
 Storage location:
@@ -236,13 +254,17 @@ Storage location:
 
 ## Roadmap
 
-- [x] MCP server (skills, context, preferences, ingest)
+- [x] MCP server (skills, context, preferences, set_preference, ingest)
 - [x] Local SQLite skill graph
 - [x] Privacy type system (compile-time enforcement)
 - [x] Consent gate + audit log
-- [ ] Desktop dashboard (Tauri + React)
+- [x] Desktop dashboard (Tauri + React): skill map, growth, insights, privacy
+- [x] Local transcript backfill — populated dashboard in the first minute
+- [x] Claude Code session-end hook (deterministic capture)
+- [x] One-click integrations: Claude Desktop, Cursor, Windsurf
+- [x] Cross-tool preference memory (write path + session briefing)
 - [ ] Weekly growth digest
-- [ ] Claude and Cursor native integrations
+- [ ] Per-client consent + at-rest encryption
 - [ ] Team skill maps (Pro)
 - [ ] Portable capability profile (Pro)
 

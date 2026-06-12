@@ -49,3 +49,9 @@ What invariants must hold because of this decision?
 | ADR | Title | Status |
 |---|---|---|
 | [0001](0001-use-rust-for-core.md) | Use Rust for core server implementation | Accepted |
+| [0002](0002-sqlite-skill-graph.md) | SQLite for the local skill graph | Accepted |
+| [0003](0003-mcp-stdio-transport.md) | MCP over stdio transport | Accepted |
+| [0004](0004-ai-as-taxonomizer.md) | AI-as-taxonomizer classification | Accepted |
+| [0005](0005-derived-friction-signals.md) | Derived friction signals & local insights engine | Accepted |
+| [0006](0006-transcript-backfill-and-hooks.md) | Local transcript backfill & session-end hook capture | Accepted |
+| [0007](0007-preference-write-path-and-context-briefing.md) | Preference write path & context briefing | Accepted |

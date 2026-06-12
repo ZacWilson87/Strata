@@ -44,14 +44,15 @@ src/
 
 ---
 
-## MCP Endpoints
+## MCP Tools
 
-| Endpoint | Returns |
+| Tool | Purpose |
 |---|---|
-| `strata://skills` | Derived skill summary (never raw content) |
-| `strata://context/current` | Current session personalization context |
-| `strata://preferences` | User workflow preferences |
-| `strata_set_preference` | Write path: store a durable user workflow preference (cross-tool memory) |
+| `strata_skills` | Derived skill summary (never raw content) |
+| `strata_context` | Session-start briefing: skills, domains, work mix, topics, preferences, insights |
+| `strata_preferences` | User workflow preferences (`pref:` namespace) |
+| `strata_ingest` | Record a completed work unit (AI pre-classified; raw content discarded) |
+| `strata_set_preference` | Write path: store/clear a durable user workflow preference (cross-tool memory) |
 
 ---
 
