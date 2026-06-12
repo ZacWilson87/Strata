@@ -119,7 +119,22 @@ impl Preferences {
 /// Also appends to the `skill_events` time series (one row per tag per UTC day),
 /// which is the source of truth for history, velocity, and decayed strength.
 pub fn upsert_skill(conn: &Connection, tag: &SkillTag) -> Result<SkillNode, GraphError> {
-    let now = Utc::now().to_rfc3339();
+    let now = Utc::now();
+    upsert_skill_on_day(conn, tag, &now.date_naive().to_string(), &now.to_rfc3339())
+}
+
+/// Upsert a skill with an explicit event day and timestamp — used by the
+/// transcript backfill so historical sessions land on the day they actually
+/// happened, not the day they were imported.
+///
+/// `last_seen` only ever moves forward (`MAX`), so backfilling old sessions
+/// after live data exists cannot rewind a skill's recency.
+pub fn upsert_skill_on_day(
+    conn: &Connection,
+    tag: &SkillTag,
+    day: &str,
+    last_seen: &str,
+) -> Result<SkillNode, GraphError> {
     let id = Uuid::new_v4().to_string();
 
     conn.execute(
@@ -127,12 +142,11 @@ pub fn upsert_skill(conn: &Connection, tag: &SkillTag) -> Result<SkillNode, Grap
          VALUES (?1, ?2, 1.0, ?3, 1)
          ON CONFLICT(tag) DO UPDATE SET
              strength = strength + 1.0,
-             last_seen = excluded.last_seen,
+             last_seen = MAX(last_seen, excluded.last_seen),
              session_count = session_count + 1",
-        params![id, tag.as_str(), now],
+        params![id, tag.as_str(), last_seen],
     )?;
 
-    let day = Utc::now().date_naive().to_string();
     conn.execute(
         "INSERT INTO skill_events (tag, day, count) VALUES (?1, ?2, 1)
          ON CONFLICT(tag, day) DO UPDATE SET count = count + 1",
@@ -265,12 +279,42 @@ pub fn delete_all_data(conn: &Connection) -> Result<(), GraphError> {
          DELETE FROM skills;
          DELETE FROM skill_events;
          DELETE FROM session_signals;
+         DELETE FROM ingested_sessions;
          DELETE FROM preferences;",
     )?;
     // Best-effort scrub: checkpoint failure (e.g. another connection holds a
     // read txn) must not turn a successful delete into an error.
     let _ = conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);");
     let _ = conn.execute_batch("VACUUM;");
+    Ok(())
+}
+
+/// Return whether a transcript session has already been ingested (by backfill
+/// or the session-end hook). Keys on the client-side session id.
+pub fn is_session_ingested(conn: &Connection, session_id: &str) -> Result<bool, GraphError> {
+    let found: Option<i64> = conn
+        .query_row(
+            "SELECT 1 FROM ingested_sessions WHERE session_id = ?1",
+            params![session_id],
+            |r| r.get(0),
+        )
+        .optional()?;
+    Ok(found.is_some())
+}
+
+/// Mark a transcript session as ingested so backfill and the session-end hook
+/// never double-count it. Idempotent.
+pub fn mark_session_ingested(
+    conn: &Connection,
+    session_id: &str,
+    day: &str,
+) -> Result<(), GraphError> {
+    conn.execute(
+        "INSERT INTO ingested_sessions (session_id, day, ingested_at)
+         VALUES (?1, ?2, ?3)
+         ON CONFLICT(session_id) DO NOTHING",
+        params![session_id, day, Utc::now().to_rfc3339()],
+    )?;
     Ok(())
 }
 

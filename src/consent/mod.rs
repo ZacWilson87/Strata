@@ -52,7 +52,14 @@ pub enum AuditEvent {
     ConsentPaused,
     ConsentRevoked,
     DataDeleted,
-    SkillIngested { count: usize, tool: String },
+    SkillIngested {
+        count: usize,
+        tool: String,
+    },
+    /// A transcript backfill run completed (sessions = how many were imported).
+    BackfillRun {
+        sessions: usize,
+    },
     SkillQueried,
     ContextQueried,
     PreferencesQueried,
@@ -66,6 +73,7 @@ impl AuditEvent {
             AuditEvent::ConsentRevoked => "consent_revoked",
             AuditEvent::DataDeleted => "data_deleted",
             AuditEvent::SkillIngested { .. } => "skill_ingested",
+            AuditEvent::BackfillRun { .. } => "backfill_run",
             AuditEvent::SkillQueried => "skill_queried",
             AuditEvent::ContextQueried => "context_queried",
             AuditEvent::PreferencesQueried => "preferences_queried",
@@ -75,6 +83,7 @@ impl AuditEvent {
     fn detail(&self) -> Option<String> {
         match self {
             AuditEvent::SkillIngested { count, tool } => Some(format!("count={count} tool={tool}")),
+            AuditEvent::BackfillRun { sessions } => Some(format!("sessions={sessions}")),
             _ => None,
         }
     }

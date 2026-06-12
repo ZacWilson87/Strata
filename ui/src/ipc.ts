@@ -4,9 +4,12 @@
 /// with `npm run dev` without a compiled Rust backend.
 import type {
   AuditLogResponse,
+  BackfillReport,
   GrowthResponse,
   InsightsResponse,
+  IntegrationsResponse,
   PreferencesResponse,
+  ScanReport,
   SkillHistoryResponse,
   SkillsResponse,
   TopicSummariesResponse,
@@ -227,4 +230,81 @@ export async function getInsights(): Promise<InsightsResponse> {
 
 export async function dismissInsight(id: string): Promise<void> {
   if (invoke) return invoke("dismiss_insight", { id });
+}
+
+const MOCK_SCAN: ScanReport = {
+  projects: 4,
+  sessions_total: 38,
+  sessions_new: 31,
+  earliest_day: "2026-01-12",
+  latest_day: "2026-06-10",
+};
+
+const MOCK_BACKFILL: BackfillReport = {
+  sessions_ingested: 29,
+  sessions_self_reported: 2,
+  sessions_duplicate: 7,
+  sessions_empty: 0,
+  skills_touched: 14,
+};
+
+const MOCK_INTEGRATIONS: IntegrationsResponse = {
+  integrations: [
+    {
+      id: "claude_desktop",
+      name: "Claude Desktop",
+      detected: true,
+      installed: true,
+      auto_installable: true,
+      manual_command: null,
+    },
+    {
+      id: "cursor",
+      name: "Cursor",
+      detected: true,
+      installed: false,
+      auto_installable: true,
+      manual_command: null,
+    },
+    {
+      id: "claude_code_hook",
+      name: "Claude Code — session capture hook",
+      detected: true,
+      installed: false,
+      auto_installable: true,
+      manual_command: null,
+    },
+    {
+      id: "claude_code_mcp",
+      name: "Claude Code — MCP server",
+      detected: true,
+      installed: false,
+      auto_installable: false,
+      manual_command: 'claude mcp add --scope user strata -- "/usr/local/bin/strata"',
+    },
+  ],
+};
+
+export async function scanTranscripts(): Promise<ScanReport> {
+  if (invoke) return invoke("scan_transcripts");
+  return MOCK_SCAN;
+}
+
+export async function runBackfill(): Promise<BackfillReport> {
+  if (invoke) return invoke("run_backfill");
+  return MOCK_BACKFILL;
+}
+
+export async function getIntegrations(): Promise<IntegrationsResponse> {
+  if (invoke) return invoke("get_integrations");
+  return MOCK_INTEGRATIONS;
+}
+
+export async function installIntegration(id: string): Promise<IntegrationsResponse> {
+  if (invoke) return invoke("install_integration", { id });
+  return {
+    integrations: MOCK_INTEGRATIONS.integrations.map((i) =>
+      i.id === id ? { ...i, installed: true } : i,
+    ),
+  };
 }

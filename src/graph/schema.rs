@@ -70,6 +70,12 @@ pub fn migrate(conn: &Connection) -> Result<(), GraphError> {
 
         CREATE INDEX IF NOT EXISTS idx_session_signals_day ON session_signals (day);
 
+        CREATE TABLE IF NOT EXISTS ingested_sessions (
+            session_id   TEXT PRIMARY KEY,
+            day          TEXT NOT NULL,
+            ingested_at  TEXT NOT NULL
+        );
+
         DROP TABLE IF EXISTS skill_snapshots;
         ",
     )?;
@@ -104,6 +110,7 @@ mod tests {
             "audit_log",
             "skill_events",
             "session_signals",
+            "ingested_sessions",
         ] {
             let count: i64 = conn
                 .query_row(

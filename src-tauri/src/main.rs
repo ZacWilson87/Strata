@@ -2,6 +2,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod commands;
+mod integrations;
 
 use std::sync::Arc;
 
@@ -33,6 +34,10 @@ fn main() {
             commands::get_topic_summaries,
             commands::get_insights,
             commands::dismiss_insight,
+            commands::scan_transcripts,
+            commands::run_backfill,
+            commands::get_integrations,
+            commands::install_integration,
         ])
         .setup(|app| {
             let db_path = strata::paths::prepare_db_path()

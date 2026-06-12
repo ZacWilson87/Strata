@@ -34,6 +34,7 @@ src/
 ├── private_mode.rs   Privacy enforcement — consent gating, data sanitization
 ├── graph/            Private skill graph (nodes, edges, queries, persistence)
 ├── signals/          Workflow signal collection + pattern analysis
+├── backfill/         Local transcript import + session-end hook capture
 ├── consent/          User consent management + audit log
 ├── server/           MCP server implementation (tool handlers, routing)
 └── tools/            MCP tools exposed to AI clients
