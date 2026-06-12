@@ -162,7 +162,20 @@ export async function getContext(): Promise<{ context: string }> {
 
 export async function getPreferences(): Promise<PreferencesResponse> {
   if (invoke) return invoke("get_preferences");
-  return { preferences: {} };
+  return {
+    preferences: {
+      commit_style: "never use emojis in commit messages",
+      planning: "outline the approach before writing code",
+    },
+  };
+}
+
+export async function setUserPreference(key: string, value: string): Promise<void> {
+  if (invoke) return invoke("set_user_preference", { key, value });
+}
+
+export async function deleteUserPreference(key: string): Promise<void> {
+  if (invoke) return invoke("delete_user_preference", { key });
 }
 
 export async function getConsentStatus(): Promise<string> {

@@ -429,6 +429,22 @@ body::after {
 .connect-state { font-size: 11px; color: var(--ok); letter-spacing: 0.05em; }
 .connect-foot { margin-top: 12px; }
 
+/* ── preferences ────────────────────────────────────────────────────────── */
+
+.pref-form { display: flex; gap: 8px; margin-top: 12px; }
+.pref-input {
+  flex: 1;
+  min-width: 0;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm, 6px);
+  color: var(--ink);
+  font-size: 12px;
+  padding: 8px 10px;
+}
+.pref-input:focus { outline: none; border-color: var(--ochre); }
+.pref-form .pref-input.mono { flex: 0 0 180px; }
+
 /* ── motion ─────────────────────────────────────────────────────────────── */
 
 @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }

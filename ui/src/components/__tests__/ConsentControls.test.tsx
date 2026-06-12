@@ -8,18 +8,34 @@ vi.mock("../../ipc", () => ({
   resumeConsent: vi.fn(),
   revokeConsent: vi.fn(),
   getAuditLog: vi.fn(),
+  getPreferences: vi.fn(),
+  setUserPreference: vi.fn(),
+  deleteUserPreference: vi.fn(),
 }));
 
-import { getConsentStatus, pauseConsent, resumeConsent, revokeConsent, getAuditLog } from "../../ipc";
+import {
+  getConsentStatus,
+  pauseConsent,
+  resumeConsent,
+  revokeConsent,
+  getAuditLog,
+  getPreferences,
+  setUserPreference,
+  deleteUserPreference,
+} from "../../ipc";
 const mockStatus = vi.mocked(getConsentStatus);
 const mockPause = vi.mocked(pauseConsent);
 const mockResume = vi.mocked(resumeConsent);
 const mockRevoke = vi.mocked(revokeConsent);
 const mockAuditLog = vi.mocked(getAuditLog);
+const mockGetPreferences = vi.mocked(getPreferences);
+const mockSetPreference = vi.mocked(setUserPreference);
+const mockDeletePreference = vi.mocked(deleteUserPreference);
 
 beforeEach(() => {
   vi.clearAllMocks();
   mockAuditLog.mockResolvedValue({ entries: [] });
+  mockGetPreferences.mockResolvedValue({ preferences: {} });
   // Stub window.confirm so revoke tests don't hang
   vi.stubGlobal("confirm", () => true);
 });
@@ -127,6 +143,52 @@ describe("ConsentControls", () => {
     render(<ConsentControls />);
     await waitFor(() => {
       expect(screen.getByText(/stored locally on your device/i)).toBeInTheDocument();
+    });
+  });
+
+  it("renders stored workflow preferences", async () => {
+    mockStatus.mockResolvedValue("granted");
+    mockGetPreferences.mockResolvedValue({
+      preferences: { commit_style: "never use emojis in commit messages" },
+    });
+    render(<ConsentControls />);
+    await waitFor(() => {
+      expect(screen.getByText("commit_style")).toBeInTheDocument();
+      expect(screen.getByText(/never use emojis/i)).toBeInTheDocument();
+    });
+  });
+
+  it("adds a preference via the form", async () => {
+    mockStatus.mockResolvedValue("granted");
+    mockSetPreference.mockResolvedValue(undefined);
+    render(<ConsentControls />);
+    await waitFor(() => screen.getByText(/workflow preferences/i));
+
+    fireEvent.change(screen.getByPlaceholderText(/key/i), {
+      target: { value: "verbosity" },
+    });
+    fireEvent.change(screen.getByPlaceholderText(/instruction/i), {
+      target: { value: "keep answers brief" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Add" }));
+
+    await waitFor(() => {
+      expect(mockSetPreference).toHaveBeenCalledWith("verbosity", "keep answers brief");
+    });
+  });
+
+  it("removes a preference", async () => {
+    mockStatus.mockResolvedValue("granted");
+    mockGetPreferences.mockResolvedValue({
+      preferences: { commit_style: "no emojis" },
+    });
+    mockDeletePreference.mockResolvedValue(undefined);
+    render(<ConsentControls />);
+    await waitFor(() => screen.getByText("commit_style"));
+
+    fireEvent.click(screen.getByRole("button", { name: /remove preference commit_style/i }));
+    await waitFor(() => {
+      expect(mockDeletePreference).toHaveBeenCalledWith("commit_style");
     });
   });
 });

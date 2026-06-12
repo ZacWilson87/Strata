@@ -110,6 +110,21 @@ fn sanitize_tag(raw: &str) -> Option<String> {
     valid.then_some(tag)
 }
 
+/// Validate and normalise a user-preference key (the `strata_set_preference`
+/// write path). Same charset rules as tags — lowercase `[a-z0-9_.-]`, max 64
+/// chars, colons rejected so clients cannot write into Strata's internal
+/// preference namespaces.
+pub fn sanitize_preference_key(raw: &str) -> Option<String> {
+    let key = raw.trim().to_lowercase();
+    if key.is_empty() || key.chars().count() > MAX_TAG_CHARS {
+        return None;
+    }
+    let valid = key
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.'));
+    valid.then_some(key)
+}
+
 /// Sanitize a conversation id: keep `[A-Za-z0-9_-]`, cap length, drop if empty.
 fn sanitize_conversation_id(raw: &str) -> Option<String> {
     let id: String = raw

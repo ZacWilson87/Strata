@@ -1,5 +1,14 @@
 import { useEffect, useState } from "react";
-import { getConsentStatus, pauseConsent, resumeConsent, revokeConsent, getAuditLog } from "../ipc";
+import {
+  getConsentStatus,
+  pauseConsent,
+  resumeConsent,
+  revokeConsent,
+  getAuditLog,
+  getPreferences,
+  setUserPreference,
+  deleteUserPreference,
+} from "../ipc";
 import type { AuditEntry } from "../types";
 
 export default function ConsentControls() {
@@ -7,6 +16,9 @@ export default function ConsentControls() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [auditLog, setAuditLog] = useState<AuditEntry[]>([]);
+  const [preferences, setPreferences] = useState<Record<string, string>>({});
+  const [newKey, setNewKey] = useState("");
+  const [newValue, setNewValue] = useState("");
 
   const refresh = async () => {
     getConsentStatus()
@@ -15,6 +27,32 @@ export default function ConsentControls() {
     getAuditLog()
       .then((r) => setAuditLog(r.entries))
       .catch(() => {/* audit log is best-effort */});
+    getPreferences()
+      .then((r) => setPreferences(r.preferences))
+      .catch(() => {/* unavailable while paused/revoked */});
+  };
+
+  const handleAddPreference = async () => {
+    if (!newKey.trim() || !newValue.trim()) return;
+    setError(null);
+    try {
+      await setUserPreference(newKey.trim(), newValue.trim());
+      setNewKey("");
+      setNewValue("");
+      await refresh();
+    } catch (e) {
+      setError(String(e));
+    }
+  };
+
+  const handleDeletePreference = async (key: string) => {
+    setError(null);
+    try {
+      await deleteUserPreference(key);
+      await refresh();
+    } catch (e) {
+      setError(String(e));
+    }
   };
 
   useEffect(() => { refresh(); }, []);
@@ -90,8 +128,63 @@ export default function ConsentControls() {
         ⌂ All data is stored locally on your device. No data is sent to any server.
       </p>
 
+      {/* Workflow preferences — the cross-tool memory the AI tools read & write */}
+      <div className="rise rise-3" style={{ marginBottom: 28 }}>
+        <div className="section-head">
+          <div>
+            <h2 className="h-section">Workflow Preferences</h2>
+            <p className="sub" style={{ marginTop: 3 }}>
+              Tell any connected AI tool how you like to work — every other tool follows it.
+              Stated in conversation ("remember: no emojis in commits") or added here.
+            </p>
+          </div>
+        </div>
+        {Object.keys(preferences).length === 0 ? (
+          <p className="sub">No preferences stored yet.</p>
+        ) : (
+          <div className="audit-table">
+            {Object.entries(preferences).map(([key, value]) => (
+              <div key={key} className="audit-row">
+                <div style={{ minWidth: 0 }}>
+                  <span className="evt">{key}</span>
+                  <span className="det">{value}</span>
+                </div>
+                <button
+                  className="btn insight-dismiss"
+                  onClick={() => handleDeletePreference(key)}
+                  aria-label={`Remove preference ${key}`}
+                >
+                  remove
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+        <div className="pref-form">
+          <input
+            className="pref-input mono"
+            placeholder="key (e.g. commit_style)"
+            value={newKey}
+            onChange={(e) => setNewKey(e.target.value)}
+          />
+          <input
+            className="pref-input"
+            placeholder="instruction any AI tool can follow"
+            value={newValue}
+            onChange={(e) => setNewValue(e.target.value)}
+          />
+          <button
+            className="btn"
+            onClick={handleAddPreference}
+            disabled={!newKey.trim() || !newValue.trim()}
+          >
+            Add
+          </button>
+        </div>
+      </div>
+
       {/* Audit log */}
-      <div className="rise rise-3">
+      <div className="rise rise-4">
         <div className="section-head">
           <div>
             <h2 className="h-section">Collection Log</h2>

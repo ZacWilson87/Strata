@@ -118,9 +118,10 @@ JSON-RPC 2.0 over **stdio** (newline-delimited). AI clients spawn the `strata` b
 | Tool name | Description |
 |---|---|
 | `strata_skills` | Ranked skill list + work types + domains + derived summary |
-| `strata_context` | Current session personalization context |
-| `strata_preferences` | Stored workflow preferences |
+| `strata_context` | Session-start briefing: top skills, domains, work mix, recent topics, preferences, insights (ADR 0007) |
+| `strata_preferences` | User workflow preferences (`pref:` namespace, set via `strata_set_preference`) |
 | `strata_ingest` | Receive signals; AI tool may pre-classify; raw content discarded |
+| `strata_set_preference` | Store/clear a durable user workflow preference — the cross-tool memory write path (ADR 0007) |
 
 ### AI-as-Taxonomizer Pattern
 

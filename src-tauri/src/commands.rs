@@ -126,6 +126,38 @@ pub async fn get_topic_summaries(
     Ok(serde_json::json!({ "summaries": summaries }))
 }
 
+/// Store (or update) a user workflow preference. Same validated write path
+/// AI clients use via the `strata_set_preference` MCP tool.
+#[tauri::command]
+pub async fn set_user_preference(
+    key: String,
+    value: String,
+    state: tauri::State<'_, AppState>,
+) -> Result<serde_json::Value, String> {
+    tools::handle_set_preference(
+        serde_json::json!({ "key": key, "value": value }),
+        &state.graph,
+        &state.consent,
+    )
+    .await
+    .map_err(|e| e.to_string())
+}
+
+/// Clear a user workflow preference (write path with an empty value).
+#[tauri::command]
+pub async fn delete_user_preference(
+    key: String,
+    state: tauri::State<'_, AppState>,
+) -> Result<serde_json::Value, String> {
+    tools::handle_set_preference(
+        serde_json::json!({ "key": key, "value": "" }),
+        &state.graph,
+        &state.consent,
+    )
+    .await
+    .map_err(|e| e.to_string())
+}
+
 /// Scan `~/.claude/projects` for importable transcripts. Read-only: counts and
 /// a date range from file metadata, no transcript content is opened.
 #[tauri::command]

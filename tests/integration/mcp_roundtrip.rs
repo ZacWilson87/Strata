@@ -189,13 +189,16 @@ async fn context_endpoint_reflects_recent_ingestion() {
 #[tokio::test]
 async fn preferences_endpoint_returns_stored_prefs() {
     let (graph, consent) = make_handles();
-    graph.set_preference("language", "en").unwrap();
-    graph.set_preference("theme", "dark").unwrap();
+    graph.set_preference("pref:language", "en").unwrap();
+    graph.set_preference("pref:theme", "dark").unwrap();
+    // Internal storage in the same table must not be exposed.
+    graph.set_preference("topic_summary:1", "internal").unwrap();
 
     let result = tools::handle_preferences(&graph, &consent).await.unwrap();
     let prefs = result["preferences"].as_object().unwrap();
     assert_eq!(prefs["language"].as_str().unwrap(), "en");
     assert_eq!(prefs["theme"].as_str().unwrap(), "dark");
+    assert_eq!(prefs.len(), 2);
 }
 
 // ── AI-as-taxonomizer: pre-classified ingest ─────────────────────────────────
@@ -650,4 +653,90 @@ async fn unknown_method_returns_method_not_found() {
     let resp = dispatch(req, &graph, &consent).await.unwrap();
     assert!(resp.error.is_some());
     assert_eq!(resp.error.unwrap().code, -32601);
+}
+
+// ── preference write path (cross-tool memory loop) ───────────────────────────
+
+/// The wow loop: a preference stated in one AI tool is stored via
+/// `strata_set_preference` and served to every other tool through both
+/// `strata_preferences` and the `strata_context` session briefing.
+#[tokio::test]
+async fn preference_set_in_one_tool_visible_to_others_via_mcp() {
+    use strata::server::router::{dispatch, JsonRpcRequest};
+
+    let (graph, consent) = make_handles();
+
+    // "Claude" stores the preference through the standard MCP envelope.
+    let set_req = JsonRpcRequest {
+        jsonrpc: "2.0".into(),
+        id: serde_json::json!(1),
+        method: "tools/call".into(),
+        params: Some(serde_json::json!({
+            "name": "strata_set_preference",
+            "arguments": { "key": "commit_style", "value": "never use emojis in commit messages" }
+        })),
+    };
+    let resp = dispatch(set_req, &graph, &consent).await.unwrap();
+    assert!(
+        resp.error.is_none(),
+        "set_preference failed: {:?}",
+        resp.error
+    );
+
+    // "Cursor" reads it back via strata_preferences.
+    let prefs = tools::handle_preferences(&graph, &consent).await.unwrap();
+    assert_eq!(
+        prefs["preferences"]["commit_style"].as_str(),
+        Some("never use emojis in commit messages")
+    );
+
+    // And the session-start briefing carries it too.
+    let context = tools::handle_context(&graph, &consent).await.unwrap();
+    assert!(context["context"]
+        .as_str()
+        .unwrap()
+        .contains("never use emojis in commit messages"));
+}
+
+#[tokio::test]
+async fn revocation_wipes_user_preferences() {
+    let (graph, consent) = make_handles();
+    tools::handle_set_preference(
+        serde_json::json!({ "key": "style", "value": "terse" }),
+        &graph,
+        &consent,
+    )
+    .await
+    .unwrap();
+
+    consent.revoke(&graph).unwrap();
+    assert!(graph.get_preferences().unwrap().0.is_empty());
+}
+
+#[tokio::test]
+async fn context_briefing_reflects_ingested_work() {
+    let (graph, consent) = make_handles();
+    tools::handle_ingest(
+        serde_json::json!({
+            "tool_used": "claude",
+            "content": "",
+            "work_type": "debugging",
+            "domain_tags": ["mcp-protocol"],
+            "topic_summary": "fixed stdio framing bug",
+            "outcome": "resolved",
+        }),
+        &graph,
+        &consent,
+    )
+    .await
+    .unwrap();
+
+    let context = tools::handle_context(&graph, &consent).await.unwrap();
+    let text = context["context"].as_str().unwrap();
+    assert!(text.contains("mcp-protocol"), "domains missing: {text}");
+    assert!(
+        text.contains("fixed stdio framing bug"),
+        "topics missing: {text}"
+    );
+    assert!(context["work_mix_30d"]["debugging"].as_i64() >= Some(1));
 }
