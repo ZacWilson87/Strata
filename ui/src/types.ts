@@ -102,6 +102,18 @@ export interface InsightsResponse {
   insights: Insight[];
 }
 
+/** Aggregate session mechanics measured locally from transcripts (ADR 0008). */
+export interface SessionMechanics {
+  window_days: number;
+  sessions: number;
+  avg_prompts: number;
+  median_duration_min: number;
+  interrupted_sessions: number;
+  tool_calls: number;
+  tool_errors: number;
+  avg_first_prompt_chars: number;
+}
+
 /** Result of scanning local AI-session transcripts (counts only, no content). */
 export interface ScanReport {
   projects: number;

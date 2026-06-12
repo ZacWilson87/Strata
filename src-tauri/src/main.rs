@@ -34,6 +34,7 @@ fn main() {
             commands::get_topic_summaries,
             commands::get_insights,
             commands::dismiss_insight,
+            commands::get_session_mechanics,
             commands::set_user_preference,
             commands::delete_user_preference,
             commands::scan_transcripts,

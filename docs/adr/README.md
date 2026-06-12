@@ -55,3 +55,4 @@ What invariants must hold because of this decision?
 | [0005](0005-derived-friction-signals.md) | Derived friction signals & local insights engine | Accepted |
 | [0006](0006-transcript-backfill-and-hooks.md) | Local transcript backfill & session-end hook capture | Accepted |
 | [0007](0007-preference-write-path-and-context-briefing.md) | Preference write path & context briefing | Accepted |
+| [0008](0008-session-mechanics-metrics.md) | Objective session mechanics & self-relative insights | Accepted |

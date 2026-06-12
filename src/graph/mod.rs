@@ -16,9 +16,9 @@ use crate::private_mode::{DerivedSummary, SkillTag};
 
 pub use insights::Insight;
 pub use queries::{
-    topic_summary_key, AuditEntry, CoOccurrenceSummary, GraphError, Preferences, SessionSignalRow,
-    SkillEdge, SkillNode, SkillNodeWithVelocity, SkillVelocity, TopicSummaryEntry,
-    VelocityDirection, WeeklySnapshot, TOPIC_SUMMARY_PREFIX, USER_PREF_PREFIX,
+    topic_summary_key, AuditEntry, CoOccurrenceSummary, GraphError, Preferences, SessionMetricsRow,
+    SessionSignalRow, SkillEdge, SkillNode, SkillNodeWithVelocity, SkillVelocity,
+    TopicSummaryEntry, VelocityDirection, WeeklySnapshot, TOPIC_SUMMARY_PREFIX, USER_PREF_PREFIX,
 };
 
 /// Preference-key namespace for dismissed insight ids.
@@ -92,6 +92,24 @@ impl GraphHandle {
     /// Mark a transcript session id as ingested (idempotent).
     pub fn mark_session_ingested(&self, session_id: &str, day: &str) -> Result<(), GraphError> {
         queries::mark_session_ingested(&*self.conn()?, session_id, day)
+    }
+
+    /// Record objective session mechanics (idempotent per session id).
+    pub fn record_session_metrics(&self, row: &SessionMetricsRow) -> Result<(), GraphError> {
+        queries::record_session_metrics(&*self.conn()?, row)
+    }
+
+    /// Whether mechanics exist for a session id.
+    pub fn has_session_metrics(&self, session_id: &str) -> Result<bool, GraphError> {
+        queries::has_session_metrics(&*self.conn_synced()?, session_id)
+    }
+
+    /// Return session mechanics from the last `days` days, newest first.
+    pub fn get_session_metrics_since(
+        &self,
+        days: i64,
+    ) -> Result<Vec<SessionMetricsRow>, GraphError> {
+        queries::get_session_metrics_since(&*self.conn_synced()?, days)
     }
 
     /// Record a co-occurrence edge between two skills.
@@ -218,16 +236,21 @@ impl GraphHandle {
         queries::get_session_signals_since(&*self.conn_synced()?, days)
     }
 
-    /// Compute actionable workflow insights from the last 30 days of session
-    /// signals, excluding any the user has dismissed.
+    /// Compute actionable workflow insights, excluding any the user has
+    /// dismissed: friction insights from the last 30 days of session signals
+    /// (ADR 0005) plus self-relative mechanics insights from the last 90 days
+    /// of session metrics (ADR 0008).
     pub fn get_insights(&self) -> Result<Vec<Insight>, GraphError> {
         let rows = self.get_session_signals_since(insights::INSIGHT_WINDOW_DAYS)?;
+        let metrics = self.get_session_metrics_since(insights::METRIC_WINDOW_DAYS)?;
         let dismissed: HashSet<String> = self
             .get_preferences_with_prefix(INSIGHT_DISMISSED_PREFIX)?
             .into_iter()
             .filter_map(|(k, _)| k.strip_prefix(INSIGHT_DISMISSED_PREFIX).map(str::to_string))
             .collect();
-        Ok(insights::compute_insights(&rows, &dismissed))
+        let mut out = insights::compute_insights(&rows, &dismissed);
+        out.extend(insights::compute_metric_insights(&metrics, &dismissed));
+        Ok(out)
     }
 
     /// Mark an insight as dismissed so it no longer appears in `get_insights`.

@@ -71,8 +71,31 @@ pub struct ParsedSession {
     /// Whether the session already reported itself via the `strata_ingest`
     /// MCP tool — if so the transcript path must not count it again.
     pub self_reported: bool,
+    /// Objective session mechanics (ADR 0008). Pure numbers, no content.
+    pub mechanics: SessionMechanics,
     /// Concatenated user prompt text (capped). Consumed by `ingest_session`.
     content: RawSignal,
+}
+
+/// Objective mechanics computed during the transcript scan. All fields are
+/// counts and durations — no content of any kind.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct SessionMechanics {
+    /// Assistant turns (messages with content).
+    pub assistant_turns: i64,
+    /// Active wall-clock minutes: gaps over 30 min between consecutive
+    /// entries (session resumed later) are excluded.
+    pub active_minutes: f64,
+    /// User interruptions of in-flight work ("[Request interrupted…").
+    pub interruptions: i64,
+    /// Tool invocations the assistant made.
+    pub tool_calls: i64,
+    /// Tool results that returned an error.
+    pub tool_errors: i64,
+    /// Character length of the first genuine user prompt.
+    pub first_prompt_chars: i64,
+    /// Total characters across genuine user prompts (for the average).
+    pub total_prompt_chars: i64,
 }
 
 /// Outcome of ingesting (or skipping) one session.
@@ -223,10 +246,18 @@ pub fn scan(root: &Path, graph: &GraphHandle) -> Result<ScanReport, BackfillErro
 pub fn parse_transcript(path: &Path) -> std::io::Result<Option<ParsedSession>> {
     let reader = BufReader::new(File::open(path)?);
 
+    /// Gaps longer than this between consecutive entries are treated as the
+    /// session being parked (laptop closed, resumed next day) and excluded
+    /// from active time.
+    const ACTIVE_GAP_CAP_SECS: i64 = 30 * 60;
+
     let mut content = String::new();
     let mut prompt_count = 0usize;
     let mut last_ts: Option<DateTime<Utc>> = None;
+    let mut prev_ts: Option<DateTime<Utc>> = None;
+    let mut active_secs: i64 = 0;
     let mut self_reported = false;
+    let mut mech = SessionMechanics::default();
 
     for line in reader.lines() {
         // Tolerate isolated bad lines (truncated writes, encoding issues).
@@ -241,6 +272,13 @@ pub fn parse_transcript(path: &Path) -> std::io::Result<Option<ParsedSession>> {
             .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
         {
             let ts = ts.with_timezone(&Utc);
+            if let Some(prev) = prev_ts {
+                let gap = (ts - prev).num_seconds();
+                if (0..=ACTIVE_GAP_CAP_SECS).contains(&gap) {
+                    active_secs += gap;
+                }
+            }
+            prev_ts = Some(ts);
             if last_ts.is_none_or(|prev| ts > prev) {
                 last_ts = Some(ts);
             }
@@ -249,35 +287,86 @@ pub fn parse_transcript(path: &Path) -> std::io::Result<Option<ParsedSession>> {
         match v.get("type").and_then(|t| t.as_str()) {
             Some("user") => {
                 let flag = |key: &str| v.get(key).and_then(|b| b.as_bool()).unwrap_or(false);
-                if flag("isSidechain") || flag("isMeta") || v.get("toolUseResult").is_some() {
+                if flag("isSidechain") {
+                    continue;
+                }
+                // Tool results ride on user-type entries; count errors there.
+                if v.get("toolUseResult").is_some() {
+                    if let Some(blocks) = v.pointer("/message/content").and_then(|c| c.as_array()) {
+                        mech.tool_errors += blocks
+                            .iter()
+                            .filter(|b| {
+                                b.get("is_error").and_then(|e| e.as_bool()).unwrap_or(false)
+                            })
+                            .count() as i64;
+                    }
+                    continue;
+                }
+                if flag("isMeta") {
+                    continue;
+                }
+                // Interruption markers arrive as text blocks in an array.
+                if let Some(blocks) = v.pointer("/message/content").and_then(|c| c.as_array()) {
+                    if blocks.iter().any(|b| {
+                        b.get("text")
+                            .and_then(|t| t.as_str())
+                            .is_some_and(|t| t.trim_start().starts_with("[Request interrupted"))
+                    }) {
+                        mech.interruptions += 1;
+                    }
                     continue;
                 }
                 let Some(text) = v.pointer("/message/content").and_then(|c| c.as_str()) else {
                     continue;
                 };
                 let text = text.trim();
+                if text.starts_with("[Request interrupted") {
+                    mech.interruptions += 1;
+                    continue;
+                }
                 if text.is_empty() || text.starts_with('<') {
                     continue;
                 }
+                let chars = text.chars().count() as i64;
+                if prompt_count == 0 {
+                    mech.first_prompt_chars = chars;
+                }
+                mech.total_prompt_chars += chars;
                 prompt_count += 1;
                 if content.len() < MAX_SESSION_CONTENT_BYTES {
                     content.push_str(text);
                     content.push('\n');
                 }
             }
-            Some("assistant") if !self_reported => {
+            Some("assistant") => {
+                if v.get("isSidechain")
+                    .and_then(|b| b.as_bool())
+                    .unwrap_or(false)
+                {
+                    continue;
+                }
                 if let Some(blocks) = v.pointer("/message/content").and_then(|c| c.as_array()) {
-                    self_reported = blocks.iter().any(|b| {
-                        b.get("type").and_then(|t| t.as_str()) == Some("tool_use")
-                            && b.get("name")
-                                .and_then(|n| n.as_str())
-                                .is_some_and(|n| n.ends_with("strata_ingest"))
-                    });
+                    mech.assistant_turns += 1;
+                    for b in blocks {
+                        if b.get("type").and_then(|t| t.as_str()) == Some("tool_use") {
+                            mech.tool_calls += 1;
+                            if !self_reported
+                                && b.get("name")
+                                    .and_then(|n| n.as_str())
+                                    .is_some_and(|n| n.ends_with("strata_ingest"))
+                            {
+                                self_reported = true;
+                            }
+                        }
+                    }
+                } else if v.pointer("/message/content").is_some() {
+                    mech.assistant_turns += 1;
                 }
             }
             _ => {}
         }
     }
+    mech.active_minutes = active_secs as f64 / 60.0;
 
     let session_id = path
         .file_stem()
@@ -296,6 +385,7 @@ pub fn parse_transcript(path: &Path) -> std::io::Result<Option<ParsedSession>> {
         last_seen: last_ts.to_rfc3339(),
         prompt_count,
         self_reported,
+        mechanics: mech,
         content: RawSignal::new(content),
     }))
 }
@@ -337,14 +427,49 @@ fn ingest_session(graph: &GraphHandle, session: ParsedSession) -> Result<Vec<Str
         .collect())
 }
 
+/// Build the metrics row for a parsed session. Work type comes from the same
+/// structural detector the keyword fallback uses (it borrows, not consumes).
+fn metrics_row(session: &ParsedSession) -> crate::graph::SessionMetricsRow {
+    let work_type = match crate::signals::detect_work_type(&session.content) {
+        crate::private_mode::WorkType::Other => None,
+        wt => wt.as_tag().as_str().strip_prefix("wt:").map(str::to_string),
+    };
+    let m = &session.mechanics;
+    crate::graph::SessionMetricsRow {
+        session_id: session.session_id.clone(),
+        day: session.day.clone(),
+        tool: TRANSCRIPT_TOOL.into(),
+        work_type,
+        prompts: session.prompt_count as i64,
+        assistant_turns: m.assistant_turns,
+        duration_min: (m.active_minutes * 10.0).round() / 10.0,
+        interruptions: m.interruptions,
+        tool_calls: m.tool_calls,
+        tool_errors: m.tool_errors,
+        first_prompt_chars: m.first_prompt_chars,
+        avg_prompt_chars: if session.prompt_count > 0 {
+            m.total_prompt_chars / session.prompt_count as i64
+        } else {
+            0
+        },
+    }
+}
+
 /// Ingest a single transcript file end-to-end: parse, dedupe, write, mark.
+///
+/// Tags and mechanics dedupe independently: mechanics are objective and apply
+/// to every session (including self-reported ones, and sessions whose tags
+/// were ingested before the metrics layer existed — they get backfilled on
+/// the next run).
 fn ingest_transcript_file(
     graph: &GraphHandle,
     session_id: &str,
     path: &Path,
     skills_touched: &mut HashSet<String>,
 ) -> Result<SessionOutcome, BackfillError> {
-    if graph.is_session_ingested(session_id)? {
+    let tags_done = graph.is_session_ingested(session_id)?;
+    let metrics_done = graph.has_session_metrics(session_id)?;
+    if tags_done && metrics_done {
         return Ok(SessionOutcome::Duplicate);
     }
     let today = Utc::now().date_naive().to_string();
@@ -354,13 +479,19 @@ fn ingest_transcript_file(
             graph.mark_session_ingested(session_id, &today)?;
             Ok(SessionOutcome::Empty)
         }
-        Some(session) if session.self_reported => {
-            // The session already described itself (better taxonomy) via the
-            // strata_ingest MCP tool — never double-count it from keywords.
-            graph.mark_session_ingested(&session.session_id, &session.day)?;
-            Ok(SessionOutcome::SelfReported)
-        }
         Some(session) => {
+            if !metrics_done {
+                graph.record_session_metrics(&metrics_row(&session))?;
+            }
+            if tags_done {
+                return Ok(SessionOutcome::Duplicate);
+            }
+            if session.self_reported {
+                // The session already described itself (better taxonomy) via
+                // the strata_ingest MCP tool — never double-count its tags.
+                graph.mark_session_ingested(&session.session_id, &session.day)?;
+                return Ok(SessionOutcome::SelfReported);
+            }
             for tag in ingest_session(graph, session)? {
                 skills_touched.insert(tag);
             }
@@ -742,5 +873,129 @@ mod tests {
             rust.last_seen >= live_last_seen,
             "last_seen must not rewind"
         );
+    }
+
+    // ── session mechanics (ADR 0008) ──────────────────────────────────────
+
+    #[test]
+    fn parse_computes_session_mechanics() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_transcript(
+            dir.path(),
+            "mech-1",
+            &[
+                user_line("fix this rust bug please", "2026-04-18T15:00:00Z"),
+                serde_json::json!({"type":"assistant","message":{"content":[
+                    {"type":"text","text":"looking"},
+                    {"type":"tool_use","name":"Bash","input":{}}
+                ]},"timestamp":"2026-04-18T15:01:00Z"}),
+                serde_json::json!({"type":"user","message":{"content":[
+                    {"type":"tool_result","is_error":true,"content":"boom"}
+                ]},"toolUseResult":{},"timestamp":"2026-04-18T15:02:00Z"}),
+                user_line("[Request interrupted by user]", "2026-04-18T15:03:00Z"),
+                user_line("try the other file", "2026-04-18T15:04:00Z"),
+                serde_json::json!({"type":"assistant","message":{"content":[
+                    {"type":"text","text":"done"}
+                ]},"timestamp":"2026-04-18T16:30:00Z"}),
+            ],
+        );
+        let session = parse_transcript(&path).unwrap().unwrap();
+        let m = &session.mechanics;
+        assert_eq!(session.prompt_count, 2);
+        assert_eq!(m.assistant_turns, 2);
+        assert_eq!(m.tool_calls, 1);
+        assert_eq!(m.tool_errors, 1);
+        assert_eq!(m.interruptions, 1);
+        assert_eq!(
+            m.first_prompt_chars,
+            "fix this rust bug please".len() as i64
+        );
+        // The 86-minute parked gap before the last entry is excluded: only the
+        // four 1-minute gaps count as active time.
+        assert!(
+            (m.active_minutes - 4.0).abs() < 0.01,
+            "{}",
+            m.active_minutes
+        );
+    }
+
+    #[test]
+    fn run_records_metrics_for_all_sessions_including_self_reported() {
+        let (dir, graph, consent) = setup();
+        let project = dir.path().join("proj");
+        std::fs::create_dir(&project).unwrap();
+        let ts = "2026-03-01T10:00:00Z";
+        write_transcript(
+            &project,
+            "plain-0000-0000-0000-000000000001",
+            &[user_line("debug this rust error", ts)],
+        );
+        write_transcript(
+            &project,
+            "selfrep-0000-0000-0000-000000000002",
+            &[
+                user_line("rust work", ts),
+                serde_json::json!({"type":"assistant","message":{"content":[
+                    {"type":"tool_use","name":"mcp__strata__strata_ingest","input":{}}
+                ]},"timestamp":ts}),
+            ],
+        );
+
+        run(dir.path(), &graph, &consent).unwrap();
+        let metrics = graph.get_session_metrics_since(36500).unwrap();
+        assert_eq!(
+            metrics.len(),
+            2,
+            "self-reported sessions still get mechanics"
+        );
+        let plain = metrics
+            .iter()
+            .find(|m| m.session_id.starts_with("plain"))
+            .unwrap();
+        assert_eq!(plain.work_type.as_deref(), Some("debugging"));
+        assert_eq!(plain.day, "2026-03-01");
+    }
+
+    #[test]
+    fn metrics_backfill_retroactively_for_previously_ingested_sessions() {
+        let (dir, graph, consent) = setup();
+        let project = dir.path().join("proj");
+        std::fs::create_dir(&project).unwrap();
+        write_transcript(
+            &project,
+            "old-0000-0000-0000-000000000001",
+            &[user_line("rust work", "2026-03-01T10:00:00Z")],
+        );
+
+        // Session was tag-ingested before the metrics layer existed.
+        graph
+            .mark_session_ingested("old-0000-0000-0000-000000000001", "2026-03-01")
+            .unwrap();
+        assert!(graph.get_session_metrics_since(36500).unwrap().is_empty());
+
+        let report = run(dir.path(), &graph, &consent).unwrap();
+        assert_eq!(report.sessions_duplicate, 1, "tags stay deduped");
+        let metrics = graph.get_session_metrics_since(36500).unwrap();
+        assert_eq!(metrics.len(), 1, "mechanics get backfilled anyway");
+
+        // And a second run is a clean no-op.
+        run(dir.path(), &graph, &consent).unwrap();
+        assert_eq!(graph.get_session_metrics_since(36500).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn revocation_wipes_session_metrics() {
+        let (dir, graph, consent) = setup();
+        let project = dir.path().join("proj");
+        std::fs::create_dir(&project).unwrap();
+        write_transcript(
+            &project,
+            "wipe-0000-0000-0000-000000000001",
+            &[user_line("rust work", "2026-03-01T10:00:00Z")],
+        );
+        run(dir.path(), &graph, &consent).unwrap();
+        assert!(!graph.get_session_metrics_since(36500).unwrap().is_empty());
+        graph.delete_all_data().unwrap();
+        assert!(graph.get_session_metrics_since(36500).unwrap().is_empty());
     }
 }

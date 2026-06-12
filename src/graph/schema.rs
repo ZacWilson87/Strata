@@ -76,6 +76,23 @@ pub fn migrate(conn: &Connection) -> Result<(), GraphError> {
             ingested_at  TEXT NOT NULL
         );
 
+        CREATE TABLE IF NOT EXISTS session_metrics (
+            session_id         TEXT PRIMARY KEY,
+            day                TEXT NOT NULL,
+            tool               TEXT NOT NULL,
+            work_type          TEXT,
+            prompts            INTEGER NOT NULL DEFAULT 0,
+            assistant_turns    INTEGER NOT NULL DEFAULT 0,
+            duration_min       REAL NOT NULL DEFAULT 0,
+            interruptions      INTEGER NOT NULL DEFAULT 0,
+            tool_calls         INTEGER NOT NULL DEFAULT 0,
+            tool_errors        INTEGER NOT NULL DEFAULT 0,
+            first_prompt_chars INTEGER NOT NULL DEFAULT 0,
+            avg_prompt_chars   INTEGER NOT NULL DEFAULT 0
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_session_metrics_day ON session_metrics (day);
+
         DROP TABLE IF EXISTS skill_snapshots;
         ",
     )?;
@@ -111,6 +128,7 @@ mod tests {
             "skill_events",
             "session_signals",
             "ingested_sessions",
+            "session_metrics",
         ] {
             let count: i64 = conn
                 .query_row(

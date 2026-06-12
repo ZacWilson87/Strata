@@ -126,6 +126,45 @@ pub async fn get_topic_summaries(
     Ok(serde_json::json!({ "summaries": summaries }))
 }
 
+/// Aggregate session-mechanics summary over the last 90 days (ADR 0008).
+/// Pure numbers computed from locally-derived metrics — no content.
+#[tauri::command]
+pub async fn get_session_mechanics(
+    state: tauri::State<'_, AppState>,
+) -> Result<serde_json::Value, String> {
+    const WINDOW_DAYS: i64 = 90;
+    let rows = state
+        .graph
+        .get_session_metrics_since(WINDOW_DAYS)
+        .map_err(|e| e.to_string())?;
+
+    let n = rows.len();
+    let avg = |f: &dyn Fn(&strata::graph::SessionMetricsRow) -> f64| -> f64 {
+        if n == 0 {
+            0.0
+        } else {
+            (rows.iter().map(f).sum::<f64>() / n as f64 * 10.0).round() / 10.0
+        }
+    };
+    let mut durations: Vec<f64> = rows.iter().map(|r| r.duration_min).collect();
+    durations.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let median_duration = if n == 0 { 0.0 } else { durations[n / 2] };
+    let interrupted = rows.iter().filter(|r| r.interruptions > 0).count();
+    let tool_calls: i64 = rows.iter().map(|r| r.tool_calls).sum();
+    let tool_errors: i64 = rows.iter().map(|r| r.tool_errors).sum();
+
+    Ok(serde_json::json!({
+        "window_days": WINDOW_DAYS,
+        "sessions": n,
+        "avg_prompts": avg(&|r| r.prompts as f64),
+        "median_duration_min": median_duration,
+        "interrupted_sessions": interrupted,
+        "tool_calls": tool_calls,
+        "tool_errors": tool_errors,
+        "avg_first_prompt_chars": avg(&|r| r.first_prompt_chars as f64),
+    }))
+}
+
 /// Store (or update) a user workflow preference. Same validated write path
 /// AI clients use via the `strata_set_preference` MCP tool.
 #[tauri::command]

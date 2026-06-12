@@ -18,7 +18,8 @@ async fn main() -> anyhow::Result<()> {
 
     // Subcommand dispatch: bare `strata` runs the MCP server (what AI clients
     // spawn); `strata hook session-end` is invoked by Claude Code's SessionEnd
-    // hook with the hook event JSON on stdin.
+    // hook with the hook event JSON on stdin; `strata backfill` runs a
+    // headless transcript import (same path as the dashboard's Setup page).
     let args: Vec<String> = std::env::args().collect();
     match args.get(1).map(String::as_str) {
         None => run_mcp_server().await,
@@ -28,8 +29,22 @@ async fn main() -> anyhow::Result<()> {
             // errors) are logged to stderr and the process exits 0.
             Ok(())
         }
-        Some(other) => anyhow::bail!("unknown subcommand: {other} (expected none or `hook`)"),
+        Some("backfill") => run_backfill(),
+        Some(other) => {
+            anyhow::bail!("unknown subcommand: {other} (expected none, `hook`, or `backfill`)")
+        }
     }
+}
+
+/// Handle `strata backfill`: import local transcripts through the privacy
+/// pipeline and print the report as JSON on stdout.
+fn run_backfill() -> anyhow::Result<()> {
+    let (graph, consent) = open_handles()?;
+    let root = strata::backfill::default_transcripts_root()
+        .ok_or_else(|| anyhow::anyhow!("could not resolve home directory"))?;
+    let report = strata::backfill::run(&root, &graph, &consent)?;
+    println!("{}", serde_json::to_string_pretty(&report)?);
+    Ok(())
 }
 
 /// Open the shared database and serve MCP over stdio.

@@ -10,6 +10,7 @@ import type {
   IntegrationsResponse,
   PreferencesResponse,
   ScanReport,
+  SessionMechanics,
   SkillHistoryResponse,
   SkillsResponse,
   TopicSummariesResponse,
@@ -239,6 +240,22 @@ const MOCK_INSIGHTS: InsightsResponse = {
 export async function getInsights(): Promise<InsightsResponse> {
   if (invoke) return invoke("get_insights");
   return MOCK_INSIGHTS;
+}
+
+const MOCK_MECHANICS: SessionMechanics = {
+  window_days: 90,
+  sessions: 34,
+  avg_prompts: 7.2,
+  median_duration_min: 24,
+  interrupted_sessions: 6,
+  tool_calls: 1480,
+  tool_errors: 52,
+  avg_first_prompt_chars: 142,
+};
+
+export async function getSessionMechanics(): Promise<SessionMechanics> {
+  if (invoke) return invoke("get_session_mechanics");
+  return MOCK_MECHANICS;
 }
 
 export async function dismissInsight(id: string): Promise<void> {
